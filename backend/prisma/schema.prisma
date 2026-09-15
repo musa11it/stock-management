@@ -1,0 +1,569 @@
+// Restaurant Stock Management System - Database Schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================================================
+// AUTH / RBAC
+// ==========================================================================
+
+enum RoleName {
+  SUPER_ADMIN
+  MANAGER
+  STAFF
+  RETAIL_USER
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        RoleName         @unique
+  description String?
+  isSystem    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  users       User[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String           @id @default(uuid())
+  key         String           @unique // e.g. "products.read"
+  module      String // e.g. "products"
+  action      String // e.g. "read"
+  description String?
+  createdAt   DateTime         @default(now())
+  roles       RolePermission[]
+
+  @@index([module])
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+  createdAt    DateTime   @default(now())
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+model User {
+  id                String     @id @default(uuid())
+  firstName         String
+  lastName          String
+  email             String     @unique
+  phone             String?
+  passwordHash      String
+  roleId            String
+  status            UserStatus @default(ACTIVE)
+  managerId         String? // for staff assigned to a manager
+  lastLoginAt       DateTime?
+  passwordResetToken   String?
+  passwordResetExpires DateTime?
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  role              Role       @relation(fields: [roleId], references: [id])
+  manager           User?      @relation("ManagerStaff", fields: [managerId], references: [id])
+  staff             User[]     @relation("ManagerStaff")
+
+  purchasesCreated  Purchase[]        @relation("PurchaseCreatedBy")
+  wastagesCreated   Wastage[]         @relation("WastageCreatedBy")
+  wastagesApproved  Wastage[]         @relation("WastageApprovedBy")
+  stockMovements    StockMovement[]   @relation("StockMovementCreatedBy")
+  stockAdjustments  StockAdjustment[] @relation("StockAdjustmentCreatedBy")
+  sales             Sale[]            @relation("SaleCreatedBy")
+  ordersPlaced      Sale[]            @relation("SaleCustomer")
+  auditLogs         AuditLog[]
+  notifications     Notification[]
+
+  @@index([roleId])
+  @@index([managerId])
+  @@map("users")
+}
+
+// ==========================================================================
+// CATALOG
+// ==========================================================================
+
+model Category {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  products    Product[]
+
+  @@map("categories")
+}
+
+model Unit {
+  id           String    @id @default(uuid())
+  name         String    @unique // e.g. Kilogram
+  abbreviation String    @unique // e.g. KG
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  products     Product[]
+
+  @@map("units")
+}
+
+model Product {
+  id              String    @id @default(uuid())
+  name            String
+  sku             String    @unique
+  barcode         String?   @unique
+  description     String?
+  categoryId      String
+  unitId          String
+  minimumStock    Decimal   @default(0) @db.Decimal(14, 3)
+  maximumStock    Decimal?  @db.Decimal(14, 3)
+  costPrice       Decimal   @default(0) @db.Decimal(14, 2)
+  sellingPrice    Decimal   @default(0) @db.Decimal(14, 2)
+  isPerishable    Boolean   @default(false)
+  shelfLifeDays   Int?
+  isActive        Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  category        Category  @relation(fields: [categoryId], references: [id])
+  unit            Unit      @relation(fields: [unitId], references: [id])
+
+  inventories       Inventory[]
+  stockMovements    StockMovement[]
+  purchaseItems     PurchaseItem[]
+  stockAdjustments  StockAdjustment[]
+  wastageItems      WastageItem[]
+  recipeIngredients RecipeIngredient[]
+
+  @@index([categoryId])
+  @@index([unitId])
+  @@index([isActive])
+  @@map("products")
+}
+
+// ==========================================================================
+// WAREHOUSE / INVENTORY
+// ==========================================================================
+
+model Warehouse {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  location    String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  inventories      Inventory[]
+  stockMovements   StockMovement[]
+  purchases        Purchase[]
+  stockAdjustments StockAdjustment[]
+  wastages         Wastage[]
+  sales            Sale[]
+
+  @@map("warehouses")
+}
+
+model Inventory {
+  id             String   @id @default(uuid())
+  productId      String
+  warehouseId    String
+  quantity       Decimal  @default(0) @db.Decimal(14, 3)
+  reservedQty    Decimal  @default(0) @db.Decimal(14, 3)
+  averageCost    Decimal  @default(0) @db.Decimal(14, 4)
+  expiryDate     DateTime?
+  batchNumber    String?
+  updatedAt      DateTime @updatedAt
+  createdAt      DateTime @default(now())
+
+  product        Product   @relation(fields: [productId], references: [id])
+  warehouse      Warehouse @relation(fields: [warehouseId], references: [id])
+
+  @@unique([productId, warehouseId])
+  @@index([warehouseId])
+  @@map("inventories")
+}
+
+enum StockMovementType {
+  PURCHASE
+  CONSUMPTION
+  WASTAGE
+  SALE
+  ADJUSTMENT
+  TRANSFER_OUT
+  TRANSFER_IN
+}
+
+enum ReferenceType {
+  PURCHASE
+  WASTAGE
+  SALE
+  ADJUSTMENT
+  CONSUMPTION
+  TRANSFER
+  RECIPE
+}
+
+model StockMovement {
+  id               String            @id @default(uuid())
+  productId        String
+  warehouseId      String
+  type             StockMovementType
+  quantity         Decimal           @db.Decimal(14, 3) // signed: positive = in, negative = out
+  unitCost         Decimal?          @db.Decimal(14, 4)
+  previousQuantity Decimal           @db.Decimal(14, 3)
+  newQuantity      Decimal           @db.Decimal(14, 3)
+  referenceType    ReferenceType?
+  referenceId      String?
+  reason           String?
+  createdById      String
+  createdAt        DateTime          @default(now())
+
+  product          Product   @relation(fields: [productId], references: [id])
+  warehouse        Warehouse @relation(fields: [warehouseId], references: [id])
+  createdBy        User      @relation("StockMovementCreatedBy", fields: [createdById], references: [id])
+
+  @@index([productId])
+  @@index([warehouseId])
+  @@index([type])
+  @@index([referenceType, referenceId])
+  @@index([createdAt])
+  @@map("stock_movements")
+}
+
+enum AdjustmentType {
+  INCREASE
+  DECREASE
+}
+
+model StockAdjustment {
+  id          String         @id @default(uuid())
+  productId   String
+  warehouseId String
+  type        AdjustmentType
+  quantity    Decimal        @db.Decimal(14, 3)
+  reason      String
+  notes       String?
+  createdById String
+  createdAt   DateTime       @default(now())
+
+  product     Product   @relation(fields: [productId], references: [id])
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  createdBy   User      @relation("StockAdjustmentCreatedBy", fields: [createdById], references: [id])
+
+  @@index([productId])
+  @@index([warehouseId])
+  @@map("stock_adjustments")
+}
+
+// ==========================================================================
+// SUPPLIERS / PURCHASES
+// ==========================================================================
+
+model Supplier {
+  id            String     @id @default(uuid())
+  name          String
+  contactPerson String?
+  email         String?
+  phone         String?
+  address       String?
+  isActive      Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  purchases     Purchase[]
+
+  @@map("suppliers")
+}
+
+enum PurchaseStatus {
+  DRAFT
+  PENDING
+  RECEIVED
+  PARTIALLY_RECEIVED
+  CANCELLED
+}
+
+model Purchase {
+  id             String         @id @default(uuid())
+  purchaseNumber String         @unique
+  supplierId     String
+  warehouseId    String
+  invoiceNumber  String?
+  purchaseDate   DateTime       @default(now())
+  status         PurchaseStatus @default(DRAFT)
+  subtotal       Decimal        @default(0) @db.Decimal(14, 2)
+  tax            Decimal        @default(0) @db.Decimal(14, 2)
+  discount       Decimal        @default(0) @db.Decimal(14, 2)
+  total          Decimal        @default(0) @db.Decimal(14, 2)
+  notes          String?
+  createdById    String
+  receivedAt     DateTime?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  supplier       Supplier       @relation(fields: [supplierId], references: [id])
+  warehouse      Warehouse      @relation(fields: [warehouseId], references: [id])
+  createdBy      User           @relation("PurchaseCreatedBy", fields: [createdById], references: [id])
+  items          PurchaseItem[]
+
+  @@index([supplierId])
+  @@index([warehouseId])
+  @@index([status])
+  @@map("purchases")
+}
+
+model PurchaseItem {
+  id             String   @id @default(uuid())
+  purchaseId     String
+  productId      String
+  quantity       Decimal  @db.Decimal(14, 3)
+  receivedQty    Decimal  @default(0) @db.Decimal(14, 3)
+  unitCost       Decimal  @db.Decimal(14, 4)
+  total          Decimal  @db.Decimal(14, 2)
+  expiryDate     DateTime?
+  batchNumber    String?
+  createdAt      DateTime @default(now())
+
+  purchase       Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  product        Product  @relation(fields: [productId], references: [id])
+
+  @@index([purchaseId])
+  @@index([productId])
+  @@map("purchase_items")
+}
+
+// ==========================================================================
+// WASTAGE
+// ==========================================================================
+
+enum WastageReason {
+  EXPIRED
+  DAMAGED
+  SPOILED
+  BURNED
+  SPILLED
+  OTHER
+}
+
+enum WastageStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Wastage {
+  id           String        @id @default(uuid())
+  wastageNumber String       @unique
+  warehouseId  String
+  reason       WastageReason
+  status       WastageStatus @default(PENDING)
+  description  String?
+  createdById  String
+  approvedById String?
+  approvedAt   DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  warehouse    Warehouse     @relation(fields: [warehouseId], references: [id])
+  createdBy    User          @relation("WastageCreatedBy", fields: [createdById], references: [id])
+  approvedBy   User?         @relation("WastageApprovedBy", fields: [approvedById], references: [id])
+  items        WastageItem[]
+
+  @@index([warehouseId])
+  @@index([status])
+  @@map("wastages")
+}
+
+model WastageItem {
+  id         String  @id @default(uuid())
+  wastageId  String
+  productId  String
+  quantity   Decimal @db.Decimal(14, 3)
+  unitCost   Decimal @default(0) @db.Decimal(14, 4)
+
+  wastage    Wastage @relation(fields: [wastageId], references: [id], onDelete: Cascade)
+  product    Product @relation(fields: [productId], references: [id])
+
+  @@index([wastageId])
+  @@index([productId])
+  @@map("wastage_items")
+}
+
+// ==========================================================================
+// RECIPES / MENU / SALES
+// ==========================================================================
+
+model Recipe {
+  id          String             @id @default(uuid())
+  name        String
+  description String?
+  menuItemId  String?            @unique
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  menuItem    MenuItem?          @relation(fields: [menuItemId], references: [id])
+  ingredients RecipeIngredient[]
+
+  @@map("recipes")
+}
+
+model RecipeIngredient {
+  id        String  @id @default(uuid())
+  recipeId  String
+  productId String
+  quantity  Decimal @db.Decimal(14, 3) // quantity of product's unit per 1 menu item
+
+  recipe    Recipe  @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id])
+
+  @@unique([recipeId, productId])
+  @@map("recipe_ingredients")
+}
+
+model MenuItem {
+  id          String    @id @default(uuid())
+  name        String
+  description String?
+  price       Decimal   @db.Decimal(14, 2)
+  category    String?
+  isActive    Boolean   @default(true)
+  imageUrl    String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  recipe      Recipe?
+  saleItems   SaleItem[]
+
+  @@map("menu_items")
+}
+
+enum SaleStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  MOBILE_MONEY
+  BANK_TRANSFER
+  OTHER
+}
+
+enum SaleSource {
+  POS
+  ONLINE
+}
+
+model Sale {
+  id            String        @id @default(uuid())
+  saleNumber    String        @unique
+  warehouseId   String
+  subtotal      Decimal       @default(0) @db.Decimal(14, 2)
+  discount      Decimal       @default(0) @db.Decimal(14, 2)
+  tax           Decimal       @default(0) @db.Decimal(14, 2)
+  total         Decimal       @default(0) @db.Decimal(14, 2)
+  paymentMethod PaymentMethod @default(CASH)
+  status        SaleStatus    @default(COMPLETED)
+  source        SaleSource    @default(POS)
+  customerName  String?
+  customerId    String?
+  createdById   String
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  warehouse     Warehouse     @relation(fields: [warehouseId], references: [id])
+  createdBy     User          @relation("SaleCreatedBy", fields: [createdById], references: [id])
+  customer      User?         @relation("SaleCustomer", fields: [customerId], references: [id])
+  items         SaleItem[]
+
+  @@index([warehouseId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([customerId])
+  @@map("sales")
+}
+
+model SaleItem {
+  id         String  @id @default(uuid())
+  saleId     String
+  menuItemId String
+  quantity   Int
+  unitPrice  Decimal @db.Decimal(14, 2)
+  total      Decimal @db.Decimal(14, 2)
+
+  sale       Sale     @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  menuItem   MenuItem @relation(fields: [menuItemId], references: [id])
+
+  @@index([saleId])
+  @@index([menuItemId])
+  @@map("sale_items")
+}
+
+// ==========================================================================
+// AUDIT / NOTIFICATIONS
+// ==========================================================================
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  entity    String
+  entityId  String?
+  oldValue  Json?
+  newValue  Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entity, entityId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+enum NotificationType {
+  LOW_STOCK
+  EXPIRY_WARNING
+  PURCHASE_RECEIVED
+  WASTAGE_PENDING_APPROVAL
+  SYSTEM
+}
+
+model Notification {
+  id        String            @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean           @default(false)
+  metadata  Json?
+  createdAt DateTime          @default(now())
+
+  user      User              @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([isRead])
+  @@map("notifications")
+}
