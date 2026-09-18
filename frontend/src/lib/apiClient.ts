@@ -3,6 +3,12 @@ import axios, { AxiosError, type InternalAxiosRequestConfig } from 'axios';
 const ACCESS_TOKEN_KEY = 'rsm_access_token';
 const REFRESH_TOKEN_KEY = 'rsm_refresh_token';
 
+// Relative by default ("/api/v1") so local dev keeps working unchanged through Vite's proxy
+// (vite.config.ts forwards /api -> http://localhost:4000). Set VITE_API_URL when the frontend
+// and backend are deployed as separate origins (e.g. two Vercel projects) - baked in at build
+// time, so it must be set before the frontend is built/deployed, not just at runtime.
+const API_BASE_URL = (import.meta.env.VITE_API_URL as string | undefined)?.trim() || '/api/v1';
+
 export const tokenStorage = {
   getAccessToken: () => localStorage.getItem(ACCESS_TOKEN_KEY),
   getRefreshToken: () => localStorage.getItem(REFRESH_TOKEN_KEY),
@@ -17,7 +23,7 @@ export const tokenStorage = {
 };
 
 export const apiClient = axios.create({
-  baseURL: '/api/v1',
+  baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -67,7 +73,7 @@ apiClient.interceptors.response.use(
       }
 
       try {
-        const { data } = await axios.post('/api/v1/auth/refresh', { refreshToken });
+        const { data } = await axios.post(`${API_BASE_URL}/auth/refresh`, { refreshToken });
         const { accessToken, refreshToken: newRefreshToken } = data.data;
         tokenStorage.setTokens(accessToken, newRefreshToken ?? refreshToken);
         resolveQueue(accessToken);

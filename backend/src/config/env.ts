@@ -10,12 +10,25 @@ function required(name: string, fallback?: string): string {
   return value;
 }
 
+/** A single origin, a comma-separated list, or "*" for any origin - see corsOrigin below. */
+function parseCorsOrigin(raw: string): string | string[] {
+  const origins = raw.split(',').map((origin) => origin.trim());
+  return origins.length === 1 ? origins[0] : origins;
+}
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   isProduction: process.env.NODE_ENV === 'production',
+  // process.env.PORT is respected either way - Vercel's own runtime ignores it (the serverless
+  // entry in api/index.ts never calls .listen()), while a traditional host (or `npm run dev`,
+  // defaulting to 4000) still binds to it via src/server.ts.
   port: Number(process.env.PORT ?? 4000),
   apiPrefix: process.env.API_PREFIX ?? '/api/v1',
-  corsOrigin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+  // A single origin ("https://app.example.com") or a comma-separated list, e.g. a production
+  // domain plus Vercel preview URLs ("https://app.example.com,https://app-git-preview.vercel.app").
+  // A bare "*" allows any origin. A single value still resolves to a plain string exactly like
+  // before, so an existing single-origin CORS_ORIGIN needs no changes.
+  corsOrigin: parseCorsOrigin(process.env.CORS_ORIGIN ?? 'http://localhost:5173'),
   databaseUrl: required('DATABASE_URL'),
   jwt: {
     secret: required('JWT_SECRET'),

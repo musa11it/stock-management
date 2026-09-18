@@ -47,5 +47,8 @@ backend/prisma/*.db
 # TypeScript incremental build cache
 *.tsbuildinfo
 
+# Vercel CLI project link (created locally by `vercel link` - project/org IDs, not shared config)
+.vercel
+
 # Misc local files
 *.local
