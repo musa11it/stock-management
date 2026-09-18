@@ -26,6 +26,14 @@ export const updateMenuItemSchema = z.object({
   params: z.object({ id: z.string().uuid() }),
 });
 
+export const createMenuItemFromProductSchema = z.object({
+  body: z.object({
+    productId: z.string().uuid('Select a product'),
+  }),
+  query: z.any().optional(),
+  params: z.any().optional(),
+});
+
 export const listMenuItemsSchema = z.object({
   query: paginationQuery.extend({
     isActive: z.coerce.boolean().optional(),

@@ -7,5 +7,6 @@ const router = Router();
 router.use(authenticate, requirePermission('reports.read'));
 
 router.get('/', dashboardController.summary);
+router.get('/net-profit', dashboardController.netProfitByPeriod);
 
 export default router;

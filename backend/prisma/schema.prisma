@@ -89,7 +89,11 @@ model User {
   stockMovements    StockMovement[]   @relation("StockMovementCreatedBy")
   stockAdjustments  StockAdjustment[] @relation("StockAdjustmentCreatedBy")
   sales             Sale[]            @relation("SaleCreatedBy")
+  salesConfirmed    Sale[]            @relation("SaleConfirmedBy")
   ordersPlaced      Sale[]            @relation("SaleCustomer")
+  expensesCreated   Expense[]         @relation("ExpenseCreatedBy")
+  expensesReceived  Expense[]         @relation("ExpenseRecipient")
+  productionsCreated Production[]     @relation("ProductionCreatedBy")
   auditLogs         AuditLog[]
   notifications     Notification[]
 
@@ -125,37 +129,66 @@ model Unit {
   @@map("units")
 }
 
+// An inventory/ingredient item (e.g. Rice, Beef, Cooking Oil) used to stock the kitchen and
+// cost recipes - never sold directly. `id` is the system identifier used everywhere in code
+// and relations; `name` is the human-facing unique key (restaurants don't stock two ingredients
+// with the same name), replacing SKU/barcode which this restaurant has no use for.
+// How a Product participates in the business's inventory/sales flow. Nullable and unenforced
+// on old rows on purpose - existing products predate this classification and must not be
+// guessed at automatically (see migration notes); once set, Production's dropdowns and
+// validation key off it. PACKAGING is reserved for a future workflow, not used yet.
+enum ProductType {
+  RAW_MATERIAL
+  FINISHED_PRODUCT
+  DIRECT_SALE
+  PACKAGING
+}
+
 model Product {
-  id              String    @id @default(uuid())
-  name            String
-  sku             String    @unique
-  barcode         String?   @unique
+  id              String       @id @default(uuid())
+  name            String       @unique
   description     String?
   categoryId      String
   unitId          String
-  minimumStock    Decimal   @default(0) @db.Decimal(14, 3)
-  maximumStock    Decimal?  @db.Decimal(14, 3)
-  costPrice       Decimal   @default(0) @db.Decimal(14, 2)
-  sellingPrice    Decimal   @default(0) @db.Decimal(14, 2)
-  isPerishable    Boolean   @default(false)
+  // Nullable: a product created before this field existed simply isn't classified yet - it
+  // stays fully usable everywhere (purchases, sales, recipes) and just won't appear in
+  // Production's type-filtered dropdowns until someone classifies it from the product form.
+  type            ProductType?
+  minimumStock    Decimal      @default(0) @db.Decimal(14, 3)
+  maximumStock    Decimal?     @db.Decimal(14, 3)
+  costPrice       Decimal      @default(0) @db.Decimal(14, 2)
+  // Optional: most ingredients aren't sold directly, but a few (e.g. bottled drinks) are -
+  // left unset (null), a product simply isn't offered for direct sale.
+  sellingPrice    Decimal?     @db.Decimal(14, 2)
+  isPerishable    Boolean      @default(false)
   shelfLifeDays   Int?
-  isActive        Boolean   @default(true)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  isActive        Boolean      @default(true)
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
 
   category        Category  @relation(fields: [categoryId], references: [id])
   unit            Unit      @relation(fields: [unitId], references: [id])
 
   inventories       Inventory[]
+  inventoryBatches  InventoryBatch[]
   stockMovements    StockMovement[]
   purchaseItems     PurchaseItem[]
   stockAdjustments  StockAdjustment[]
   wastageItems      WastageItem[]
   recipeIngredients RecipeIngredient[]
+  producedBy        Production[]         @relation("ProductionOutput")
+  usedInProduction  ProductionMaterial[] @relation("ProductionMaterialProduct")
+  // A Production-facing recipe attached directly to the finished product it produces (distinct
+  // from Recipe.menuItemId, which attaches a recipe to a sellable menu item instead).
+  productionRecipe   Recipe?             @relation("ProductFinishedRecipe")
+  // The "List for Sale" menu wrapper for this product, if one has been created - see
+  // MenuItem.linkedProductId.
+  directSaleMenuItem MenuItem?           @relation("ProductDirectSaleMenuItem")
 
   @@index([categoryId])
   @@index([unitId])
   @@index([isActive])
+  @@index([type])
   @@map("products")
 }
 
@@ -172,15 +205,22 @@ model Warehouse {
   updatedAt   DateTime @updatedAt
 
   inventories      Inventory[]
+  inventoryBatches InventoryBatch[]
   stockMovements   StockMovement[]
   purchases        Purchase[]
   stockAdjustments StockAdjustment[]
   wastages         Wastage[]
   sales            Sale[]
+  productionsFrom  Production[] @relation("ProductionSource")
+  productionsInto  Production[] @relation("ProductionDestination")
+  productionMaterialsFrom ProductionMaterial[]
 
   @@map("warehouses")
 }
 
+// Aggregate stock level per product/warehouse - total quantity and running weighted-average
+// cost. Expiry is NOT tracked here: the same product can be received on different dates with
+// different expiry dates, so per-batch detail lives in InventoryBatch instead.
 model Inventory {
   id             String   @id @default(uuid())
   productId      String
@@ -188,8 +228,6 @@ model Inventory {
   quantity       Decimal  @default(0) @db.Decimal(14, 3)
   reservedQty    Decimal  @default(0) @db.Decimal(14, 3)
   averageCost    Decimal  @default(0) @db.Decimal(14, 4)
-  expiryDate     DateTime?
-  batchNumber    String?
   updatedAt      DateTime @updatedAt
   createdAt      DateTime @default(now())
 
@@ -201,6 +239,30 @@ model Inventory {
   @@map("inventories")
 }
 
+// One row per receipt/batch of stock for a product at a warehouse, so each can carry its own
+// expiry date (Expiry Date = Received Date + Product.shelfLifeDays, computed when stock is
+// received - never stored on Product or entered by hand). `quantity` is what's left of that
+// batch after FEFO consumption; it never goes below 0. Non-perishable products, and stock
+// received before this feature existed, simply have expiryDate = null.
+model InventoryBatch {
+  id           String    @id @default(uuid())
+  productId    String
+  warehouseId  String
+  quantity     Decimal   @db.Decimal(14, 3)
+  unitCost     Decimal   @db.Decimal(14, 4)
+  receivedDate DateTime  @default(now())
+  expiryDate   DateTime?
+  batchNumber  String?
+  createdAt    DateTime  @default(now())
+
+  product      Product   @relation(fields: [productId], references: [id])
+  warehouse    Warehouse @relation(fields: [warehouseId], references: [id])
+
+  @@index([productId, warehouseId, quantity])
+  @@index([expiryDate])
+  @@map("inventory_batches")
+}
+
 enum StockMovementType {
   PURCHASE
   CONSUMPTION
@@ -209,6 +271,12 @@ enum StockMovementType {
   ADJUSTMENT
   TRANSFER_OUT
   TRANSFER_IN
+  // Raw material consumed by / finished product yielded from a Production run. Kept distinct
+  // from CONSUMPTION and ADJUSTMENT so existing reports (Net Profit's consumptionCost/
+  // adjustmentGainValue) never see them - a production run moves value from raw-material stock
+  // into finished-product stock, it doesn't create a loss or a stock-count correction.
+  PRODUCTION_CONSUME
+  PRODUCTION_YIELD
 }
 
 enum ReferenceType {
@@ -219,6 +287,7 @@ enum ReferenceType {
   CONSUMPTION
   TRANSFER
   RECIPE
+  PRODUCTION
 }
 
 model StockMovement {
@@ -271,6 +340,75 @@ model StockAdjustment {
   @@index([productId])
   @@index([warehouseId])
   @@map("stock_adjustments")
+}
+
+// ==========================================================================
+// PRODUCTION (raw materials -> finished product)
+// ==========================================================================
+
+enum ProductionStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+}
+
+// A production run: consumes ProductionMaterial rows (raw materials, from an existing Product)
+// out of sourceWarehouse and, once completed, yields plannedQuantity/actualQuantity units of
+// finishedProduct (also an existing Product - never a separate "finished goods" model) into
+// destinationWarehouse. Stays DRAFT (no stock touched) until completed, mirroring how a
+// Purchase stays PENDING until received - reuses that same two-step shape rather than a new one.
+model Production {
+  id                      String           @id @default(uuid())
+  productionNumber        String           @unique
+  finishedProductId       String
+  plannedQuantity         Decimal          @db.Decimal(14, 3)
+  actualQuantity          Decimal?         @db.Decimal(14, 3)
+  sourceWarehouseId       String
+  destinationWarehouseId  String
+  status                  ProductionStatus @default(DRAFT)
+  unitCost                Decimal?         @db.Decimal(14, 4)
+  totalCost               Decimal?         @db.Decimal(14, 2)
+  batchNumber             String?
+  notes                   String?
+  createdById             String
+  completedAt             DateTime?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
+
+  finishedProduct         Product   @relation("ProductionOutput", fields: [finishedProductId], references: [id])
+  sourceWarehouse         Warehouse @relation("ProductionSource", fields: [sourceWarehouseId], references: [id])
+  destinationWarehouse    Warehouse @relation("ProductionDestination", fields: [destinationWarehouseId], references: [id])
+  createdBy               User      @relation("ProductionCreatedBy", fields: [createdById], references: [id])
+  materials                ProductionMaterial[]
+
+  @@index([finishedProductId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("productions")
+}
+
+model ProductionMaterial {
+  id            String  @id @default(uuid())
+  productionId  String
+  productId     String
+  // Which warehouse THIS material is actually consumed from - independent of the parent
+  // Production's sourceWarehouseId, so a single run can pull Flour from Main Kitchen Store and
+  // Sugar from Cold Room in one go. Nullable so an old row created before this field existed
+  // simply means "use Production.sourceWarehouseId" (see production.service.ts) - never
+  // backfilled or guessed at.
+  warehouseId   String?
+  quantity      Decimal @db.Decimal(14, 3)
+  unitCost      Decimal @db.Decimal(14, 4)
+  total         Decimal @db.Decimal(14, 2)
+
+  production    Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+  product       Product    @relation("ProductionMaterialProduct", fields: [productId], references: [id])
+  warehouse     Warehouse? @relation(fields: [warehouseId], references: [id])
+
+  @@index([productionId])
+  @@index([productId])
+  @@index([warehouseId])
+  @@map("production_materials")
 }
 
 // ==========================================================================
@@ -337,7 +475,9 @@ model PurchaseItem {
   receivedQty    Decimal  @default(0) @db.Decimal(14, 3)
   unitCost       Decimal  @db.Decimal(14, 4)
   total          Decimal  @db.Decimal(14, 2)
-  expiryDate     DateTime?
+  // Optional supplier lot label, carried onto the InventoryBatch created when this item is
+  // received. Expiry is NOT entered here - it's computed at receiving time from the product's
+  // shelf life, since the same purchase item can be part-received on different actual dates.
   batchNumber    String?
   createdAt      DateTime @default(now())
 
@@ -411,15 +551,21 @@ model WastageItem {
 // ==========================================================================
 
 model Recipe {
-  id          String             @id @default(uuid())
-  name        String
-  description String?
-  menuItemId  String?            @unique
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
+  id                 String             @id @default(uuid())
+  name               String
+  description        String?
+  menuItemId         String?            @unique
+  // Optional link to the Product it produces (e.g. "Mandazi") so a Production run can load its
+  // ingredient list instead of the user rebuilding it by hand every time. Independent of
+  // menuItemId - a recipe can be linked to a menu item, a finished product, both, or neither
+  // (an unlinked, reusable recipe), mirroring how menuItemId already works.
+  finishedProductId  String?            @unique
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
-  menuItem    MenuItem?          @relation(fields: [menuItemId], references: [id])
-  ingredients RecipeIngredient[]
+  menuItem           MenuItem?          @relation(fields: [menuItemId], references: [id])
+  finishedProduct    Product?           @relation("ProductFinishedRecipe", fields: [finishedProductId], references: [id])
+  ingredients        RecipeIngredient[]
 
   @@map("recipes")
 }
@@ -428,7 +574,7 @@ model RecipeIngredient {
   id        String  @id @default(uuid())
   recipeId  String
   productId String
-  quantity  Decimal @db.Decimal(14, 3) // quantity of product's unit per 1 menu item
+  quantity  Decimal @db.Decimal(14, 3) // quantity of product's unit per 1 unit of whatever the parent Recipe is linked to (1 menu item sold, or 1 unit of the linked finished product produced)
 
   recipe    Recipe  @relation(fields: [recipeId], references: [id], onDelete: Cascade)
   product   Product @relation(fields: [productId], references: [id])
@@ -438,18 +584,26 @@ model RecipeIngredient {
 }
 
 model MenuItem {
-  id          String    @id @default(uuid())
-  name        String
-  description String?
-  price       Decimal   @db.Decimal(14, 2)
-  category    String?
-  isActive    Boolean   @default(true)
-  imageUrl    String?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id              String    @id @default(uuid())
+  name            String
+  description     String?
+  price           Decimal   @db.Decimal(14, 2)
+  category        String?
+  isActive        Boolean   @default(true)
+  imageUrl        String?
+  // Set only for a menu item created via "List for Sale" (see menuItem.service.ts
+  // ensureSellableMenuItem): marks this item as THE resale listing for that Product, so
+  // producing/reclassifying the same product again reuses it instead of creating a duplicate
+  // menu entry with the ingredients rebuilt from scratch. Ordinary menu items (a cooked dish with
+  // its own recipe) leave this null - unrelated to Recipe.menuItemId, which is the recipe a menu
+  // item consumes when sold, not the product it resells.
+  linkedProductId String?   @unique
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  recipe      Recipe?
-  saleItems   SaleItem[]
+  linkedProduct   Product?   @relation("ProductDirectSaleMenuItem", fields: [linkedProductId], references: [id])
+  recipe          Recipe?
+  saleItems       SaleItem[]
 
   @@map("menu_items")
 }
@@ -487,11 +641,17 @@ model Sale {
   customerName  String?
   customerId    String?
   createdById   String
+  // Who accepted/confirmed the order (moved it to COMPLETED) and when - a POS sale is
+  // considered self-confirmed by its creator at creation time; an online order is confirmed
+  // separately, later, by whichever staff/manager/admin fulfills it.
+  confirmedById String?
+  confirmedAt   DateTime?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
   warehouse     Warehouse     @relation(fields: [warehouseId], references: [id])
   createdBy     User          @relation("SaleCreatedBy", fields: [createdById], references: [id])
+  confirmedBy   User?         @relation("SaleConfirmedBy", fields: [confirmedById], references: [id])
   customer      User?         @relation("SaleCustomer", fields: [customerId], references: [id])
   items         SaleItem[]
 
@@ -566,4 +726,51 @@ model Notification {
   @@index([userId])
   @@index([isRead])
   @@map("notifications")
+}
+
+// ==========================================================================
+// EXPENSES
+// ==========================================================================
+
+enum ExpenseCategory {
+  SALARY
+  ELECTRICITY
+  WATER
+  RENT
+  TAX
+  TRANSPORT
+  MAINTENANCE
+  INTERNET
+  MARKETING
+  OTHER
+}
+
+enum ExpenseStatus {
+  PAID
+}
+
+// Created and paid in one step by an authorized Admin/Manager - there is no separate approval
+// stage, so `createdBy` doubles as "paid by". For SALARY, the recipient is an existing
+// STAFF/MANAGER user account (never a new/duplicate worker record); for every other category,
+// `recipientName` is a free-text payee (utility company, landlord, vendor, etc.).
+model Expense {
+  id              String          @id @default(uuid())
+  expenseNumber   String          @unique
+  category        ExpenseCategory
+  recipientUserId String?
+  recipientName   String?
+  amount          Decimal         @db.Decimal(14, 2)
+  status          ExpenseStatus   @default(PAID)
+  description     String?
+  createdById     String
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  recipientUser   User?           @relation("ExpenseRecipient", fields: [recipientUserId], references: [id])
+  createdBy       User            @relation("ExpenseCreatedBy", fields: [createdById], references: [id])
+
+  @@index([category])
+  @@index([createdAt])
+  @@index([recipientUserId])
+  @@map("expenses")
 }

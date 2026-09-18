@@ -28,6 +28,7 @@ const schema = z.object({
   name: z.string().min(1, 'Name is required'),
   description: z.string().optional(),
   menuItemId: z.string().optional(),
+  finishedProductId: z.string().optional(),
   ingredients: z.array(ingredientSchema).min(1, 'Add at least one ingredient'),
 });
 type FormValues = z.infer<typeof schema>;
@@ -40,9 +41,14 @@ export default function RecipesPage() {
   const { data, isLoading, isError, error, refetch } = useQuery({ queryKey: ['recipes'], queryFn: () => recipeService.list({ limit: 100 }) });
   const { data: products } = useQuery({ queryKey: ['products', 'all'], queryFn: () => productService.list({ limit: 200 }) });
   const { data: menuItems } = useQuery({ queryKey: ['menu', 'all'], queryFn: () => menuItemService.list({ limit: 200 }) });
+  const { data: finishedProducts } = useQuery({
+    queryKey: ['products', 'all', 'FINISHED_PRODUCT'],
+    queryFn: () => productService.list({ limit: 200, type: 'FINISHED_PRODUCT' }),
+  });
 
   const createMutation = useMutation({
-    mutationFn: (values: FormValues) => recipeService.create({ ...values, menuItemId: values.menuItemId || undefined }),
+    mutationFn: (values: FormValues) =>
+      recipeService.create({ ...values, menuItemId: values.menuItemId || undefined, finishedProductId: values.finishedProductId || undefined }),
     onSuccess: () => {
       toast.success('Recipe created successfully');
       queryClient.invalidateQueries({ queryKey: ['recipes'] });
@@ -53,7 +59,8 @@ export default function RecipesPage() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, values }: { id: string; values: FormValues }) => recipeService.update(id, { ...values, menuItemId: values.menuItemId || null }),
+    mutationFn: ({ id, values }: { id: string; values: FormValues }) =>
+      recipeService.update(id, { ...values, menuItemId: values.menuItemId || null, finishedProductId: values.finishedProductId || null }),
     onSuccess: () => {
       toast.success('Recipe updated successfully');
       queryClient.invalidateQueries({ queryKey: ['recipes'] });
@@ -78,6 +85,10 @@ export default function RecipesPage() {
 
   const columns: Column<Recipe>[] = [
     { header: 'Recipe', accessor: (r) => <span className="font-medium text-slate-900">{r.name}</span> },
+    {
+      header: 'Linked to',
+      accessor: (r) => r.finishedProduct?.name ?? <span className="text-xs text-slate-400">Unlinked</span>,
+    },
     {
       header: 'Ingredients',
       accessor: (r) => (
@@ -139,7 +150,7 @@ export default function RecipesPage() {
 
       <Card>
         {isLoading ? (
-          <TableSkeleton cols={2} />
+          <TableSkeleton cols={3} />
         ) : isError ? (
           <ErrorState message={getErrorMessage(error)} onRetry={refetch} />
         ) : !data || data.data.length === 0 ? (
@@ -154,6 +165,7 @@ export default function RecipesPage() {
           recipe={modalState.recipe}
           products={products?.data ?? []}
           menuItems={menuItems?.data ?? []}
+          finishedProducts={finishedProducts?.data ?? []}
           isSubmitting={createMutation.isPending || updateMutation.isPending}
           onClose={() => setModalState(null)}
           onSubmit={(values) =>
@@ -181,6 +193,7 @@ function RecipeFormModal({
   recipe,
   products,
   menuItems,
+  finishedProducts,
   isSubmitting,
   onClose,
   onSubmit,
@@ -188,6 +201,7 @@ function RecipeFormModal({
   recipe?: Recipe;
   products: { id: string; name: string }[];
   menuItems: { id: string; name: string }[];
+  finishedProducts: { id: string; name: string }[];
   isSubmitting: boolean;
   onClose: () => void;
   onSubmit: (values: FormValues) => void;
@@ -203,6 +217,7 @@ function RecipeFormModal({
       name: recipe?.name ?? '',
       description: recipe?.description ?? '',
       menuItemId: recipe?.menuItemId ?? '',
+      finishedProductId: recipe?.finishedProductId ?? '',
       ingredients: recipe?.ingredients.map((i) => ({ productId: i.productId, quantity: Number(i.quantity) })) ?? [{ productId: '', quantity: 1 }],
     },
   });
@@ -227,14 +242,28 @@ function RecipeFormModal({
     >
       <form id="recipe-form" onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <Input label="Recipe name" error={errors.name?.message} {...register('name')} />
-        <Select label="Linked menu item (optional)" {...register('menuItemId')}>
-          <option value="">None</option>
-          {menuItems.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.name}
-            </option>
-          ))}
-        </Select>
+        <div className="grid grid-cols-2 gap-3">
+          <Select label="Linked menu item (optional)" {...register('menuItemId')}>
+            <option value="">None</option>
+            {menuItems.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </Select>
+          <Select
+            label="Linked finished product (optional)"
+            hint="Lets Production load this recipe automatically when producing this item."
+            {...register('finishedProductId')}
+          >
+            <option value="">None</option>
+            {finishedProducts.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </Select>
+        </div>
         <Textarea label="Description (optional)" rows={2} {...register('description')} />
 
         <div>

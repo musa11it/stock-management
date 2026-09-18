@@ -17,6 +17,8 @@ import {
   BarChart3,
   Settings,
   ClipboardList,
+  Wallet,
+  Factory,
 } from 'lucide-react';
 
 export interface NavItem {
@@ -24,6 +26,8 @@ export interface NavItem {
   to: string;
   icon: LucideIcon;
   permission?: string;
+  /** Restricts visibility to these roles regardless of permission (SUPER_ADMIN always passes). Use when a page is self-scoped rather than permission-gated. */
+  roles?: string[];
 }
 
 export interface NavGroup {
@@ -68,6 +72,14 @@ export const navGroups: NavGroup[] = [
       { label: 'Recipes', to: '/recipes', icon: ChefHat, permission: 'recipes.read' },
       { label: 'Menu', to: '/menu', icon: UtensilsCrossed, permission: 'menu.read' },
       { label: 'Sales', to: '/sales', icon: Receipt, permission: 'sales.read' },
+      { label: 'Production', to: '/production', icon: Factory, permission: 'production.read' },
+    ],
+  },
+  {
+    title: 'Finance',
+    items: [
+      { label: 'Expenses', to: '/expenses', icon: Wallet, permission: 'expenses.read' },
+      { label: 'My Payments', to: '/my-payments', icon: Receipt, roles: ['STAFF', 'MANAGER'] },
     ],
   },
   {

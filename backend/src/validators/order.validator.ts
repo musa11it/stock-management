@@ -8,7 +8,9 @@ const orderItemSchema = z.object({
 
 export const createOrderSchema = z.object({
   body: z.object({
-    paymentMethod: z.enum(['CASH', 'CARD', 'MOBILE_MONEY', 'BANK_TRANSFER', 'OTHER']).default('CASH'),
+    // Customers order online and pay online - cash isn't an option here (that's only for a
+    // walk-in POS sale rung up by staff, handled by the separate /sales endpoint).
+    paymentMethod: z.enum(['CARD', 'MOBILE_MONEY', 'BANK_TRANSFER', 'OTHER']).default('MOBILE_MONEY'),
     items: z.array(orderItemSchema).min(1, 'Add at least one item to your order').max(50, 'Too many items in one order'),
   }),
   query: z.any().optional(),

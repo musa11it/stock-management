@@ -4,7 +4,6 @@ import type { ApiResponse } from '@/types';
 export interface StockReportRow {
   productId: string;
   productName: string;
-  sku: string;
   category: string;
   warehouse: string;
   unit: string;

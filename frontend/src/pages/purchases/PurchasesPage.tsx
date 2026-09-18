@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { formResolver } from '@/lib/zodForm';
@@ -24,6 +24,7 @@ import { purchaseCrud } from '@/services/purchase.service';
 import { productService, supplierService, warehouseService } from '@/services/catalog.service';
 import { getErrorMessage } from '@/lib/apiClient';
 import type { Purchase, PurchaseStatus } from '@/types';
+import { useProductAssignments, filterProductsForWarehouse } from '@/hooks/useProductAssignments';
 
 const statusTone: Record<PurchaseStatus, 'slate' | 'amber' | 'green' | 'blue' | 'red'> = {
   DRAFT: 'slate',
@@ -166,6 +167,7 @@ function CreatePurchaseModal({
     handleSubmit,
     control,
     watch,
+    setValue,
     formState: { errors },
   } = useForm<FormValues>({
     resolver: formResolver(schema),
@@ -176,6 +178,21 @@ function CreatePurchaseModal({
   const subtotal = items?.reduce((sum, i) => sum + (Number(i.quantity) || 0) * (Number(i.unitCost) || 0), 0) ?? 0;
   const tax = Number(watch('tax')) || 0;
   const discount = Number(watch('discount')) || 0;
+
+  const assignments = useProductAssignments();
+  const warehouseId = watch('warehouseId');
+  // A purchase can establish a product's first assignment to a warehouse, so products never
+  // stocked anywhere yet stay selectable alongside ones already assigned to this warehouse.
+  const productOptions = filterProductsForWarehouse(products, warehouseId, assignments, true);
+
+  useEffect(() => {
+    items?.forEach((item, index) => {
+      if (item.productId && warehouseId && !productOptions.some((p) => p.id === item.productId)) {
+        setValue(`items.${index}.productId`, '');
+      }
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warehouseId]);
 
   return (
     <Modal
@@ -223,12 +240,15 @@ function CreatePurchaseModal({
             </Button>
           </div>
           {errors.items?.message && <p className="mb-2 text-xs text-red-600">{errors.items.message}</p>}
+          {warehouseId && productOptions.length === 0 && (
+            <p className="mb-2 text-xs text-amber-600">No products are assigned to this warehouse yet.</p>
+          )}
           <div className="space-y-2">
             {fields.map((field, index) => (
               <div key={field.id} className="flex items-end gap-2 rounded-lg border border-slate-200 p-2">
                 <Select className="flex-[2]" label={index === 0 ? 'Product' : undefined} {...register(`items.${index}.productId` as const)}>
                   <option value="">Select product</option>
-                  {products.map((p) => (
+                  {productOptions.map((p) => (
                     <option key={p.id} value={p.id}>
                       {p.name}
                     </option>

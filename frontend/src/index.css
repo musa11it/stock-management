@@ -55,3 +55,19 @@ body {
 .skeleton {
   @apply animate-pulse bg-slate-200 rounded;
 }
+
+/* Printing a receipt: hide the rest of the app, show only the receipt content full-page. */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #receipt-print-area,
+  #receipt-print-area * {
+    visibility: visible;
+  }
+  #receipt-print-area {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+  }
+}

@@ -59,6 +59,7 @@ export const listInventorySchema = z.object({
     warehouseId: z.string().uuid().optional(),
     lowStock: z.coerce.boolean().optional(),
     expiringSoon: z.coerce.boolean().optional(),
+    expired: z.coerce.boolean().optional(),
   }),
   body: z.any().optional(),
   params: z.any().optional(),

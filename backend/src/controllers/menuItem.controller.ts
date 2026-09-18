@@ -16,6 +16,10 @@ export const create = asyncHandler(async (req: Request, res: Response) => {
   sendSuccess(res, await menuItemService.createMenuItem(req.body, req.user!.sub), 'Menu item created successfully', 201);
 });
 
+export const createFromProduct = asyncHandler(async (req: Request, res: Response) => {
+  sendSuccess(res, await menuItemService.ensureSellableMenuItem(req.body.productId, req.user!.sub), 'Product listed for sale', 201);
+});
+
 export const update = asyncHandler(async (req: Request, res: Response) => {
   sendSuccess(res, await menuItemService.updateMenuItem(req.params.id, req.body, req.user!.sub), 'Menu item updated successfully');
 });

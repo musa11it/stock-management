@@ -38,6 +38,7 @@ describe('wastage approval workflow', () => {
     await prisma.stockAdjustment.deleteMany({ where: { productId } });
     await prisma.wastageItem.deleteMany({ where: { product: { id: productId } } });
     await prisma.wastage.deleteMany({ where: { createdById: { in: [staffId, managerId].filter(Boolean) } } });
+    await prisma.inventoryBatch.deleteMany({ where: { productId } });
     await prisma.inventory.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.category.deleteMany({ where: { id: categoryId } });

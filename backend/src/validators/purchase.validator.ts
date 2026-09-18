@@ -5,7 +5,6 @@ const purchaseItemSchema = z.object({
   productId: z.string().uuid(),
   quantity: z.coerce.number().positive('Must be greater than 0'),
   unitCost: z.coerce.number().min(0, 'Cannot be negative'),
-  expiryDate: z.coerce.date().optional(),
   batchNumber: z.string().max(100).optional(),
 });
 

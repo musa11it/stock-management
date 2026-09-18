@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useForm } from 'react-hook-form';
 import { formResolver } from '@/lib/zodForm';
@@ -22,17 +22,33 @@ import * as stockService from '@/services/stock.service';
 import { productService, warehouseService } from '@/services/catalog.service';
 import { getErrorMessage } from '@/lib/apiClient';
 import type { Inventory } from '@/types';
+import { useProductAssignments, filterProductsForWarehouse } from '@/hooks/useProductAssignments';
+import { useAuth } from '@/hooks/useAuth';
 
 export default function InventoryPage() {
   const queryClient = useQueryClient();
+  // Cost/value are financial/profit information - staff (who need this page to see assigned
+  // stock quantities) shouldn't see them, only roles with reporting access.
+  const { hasPermission } = useAuth();
+  const canSeeCost = hasPermission('reports.read');
   const [page, setPage] = useState(1);
   const [warehouseId, setWarehouseId] = useState('');
   const [lowStockOnly, setLowStockOnly] = useState(false);
+  const [expiringSoonOnly, setExpiringSoonOnly] = useState(false);
+  const [expiredOnly, setExpiredOnly] = useState(false);
   const [modal, setModal] = useState<'adjust' | 'consume' | 'transfer' | null>(null);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['inventory', page, warehouseId, lowStockOnly],
-    queryFn: () => stockService.listInventory({ page, limit: 15, warehouseId: warehouseId || undefined, lowStock: lowStockOnly || undefined }),
+    queryKey: ['inventory', page, warehouseId, lowStockOnly, expiringSoonOnly, expiredOnly],
+    queryFn: () =>
+      stockService.listInventory({
+        page,
+        limit: 15,
+        warehouseId: warehouseId || undefined,
+        lowStock: lowStockOnly || undefined,
+        expiringSoon: expiringSoonOnly || undefined,
+        expired: expiredOnly || undefined,
+      }),
   });
 
   const { data: warehouses } = useQuery({ queryKey: ['warehouses', 'all'], queryFn: () => warehouseService.list({ limit: 100 }) });
@@ -60,11 +76,21 @@ export default function InventoryPage() {
       },
     },
     { header: 'Min. stock', accessor: (i) => `${Number(i.product.minimumStock)} ${i.product.unit.abbreviation}` },
-    { header: 'Avg. cost', accessor: (i) => Number(i.averageCost).toLocaleString() },
-    { header: 'Value', accessor: (i) => (Number(i.quantity) * Number(i.averageCost)).toLocaleString() },
+    ...(canSeeCost
+      ? [
+          { header: 'Avg. cost', accessor: (i: Inventory) => Number(i.averageCost).toLocaleString() },
+          { header: 'Value', accessor: (i: Inventory) => (Number(i.quantity) * Number(i.averageCost)).toLocaleString() },
+        ]
+      : []),
     {
       header: 'Expiry',
-      accessor: (i) => (i.expiryDate ? new Date(i.expiryDate).toLocaleDateString() : <span className="text-slate-400">—</span>),
+      accessor: (i) => {
+        if (!i.nearestExpiry) return <span className="text-slate-400">—</span>;
+        const label = new Date(i.nearestExpiry).toLocaleDateString();
+        if (i.isExpired) return <Badge tone="red">Expired {label}</Badge>;
+        if (i.isNearExpiry) return <Badge tone="amber">{label}</Badge>;
+        return <span>{label}</span>;
+      },
     },
   ];
 
@@ -116,10 +142,34 @@ export default function InventoryPage() {
             />
             Low stock only
           </label>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-300"
+              checked={expiringSoonOnly}
+              onChange={(e) => {
+                setExpiringSoonOnly(e.target.checked);
+                setPage(1);
+              }}
+            />
+            Expiring soon
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-slate-300"
+              checked={expiredOnly}
+              onChange={(e) => {
+                setExpiredOnly(e.target.checked);
+                setPage(1);
+              }}
+            />
+            Expired
+          </label>
         </div>
 
         {isLoading ? (
-          <TableSkeleton cols={6} />
+          <TableSkeleton cols={7} />
         ) : isError ? (
           <ErrorState message={getErrorMessage(error)} onRetry={refetch} />
         ) : !data || data.data.length === 0 ? (
@@ -168,8 +218,25 @@ function AdjustModal({ products, warehouses, onClose, onSuccess }: { products: P
   const {
     register,
     handleSubmit,
+    watch,
+    setValue,
     formState: { errors },
   } = useForm<z.infer<typeof adjustSchema>>({ resolver: formResolver(adjustSchema), defaultValues: { type: 'INCREASE' } });
+
+  const assignments = useProductAssignments();
+  const warehouseId = watch('warehouseId');
+  const productId = watch('productId');
+  // An increase can establish a product's first assignment to a warehouse; a decrease can only
+  // touch stock that's already there.
+  const type = watch('type');
+  const productOptions = filterProductsForWarehouse(products, warehouseId, assignments, type === 'INCREASE');
+
+  useEffect(() => {
+    if (productId && warehouseId && !productOptions.some((p) => p.id === productId)) {
+      setValue('productId', '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warehouseId, type]);
 
   const mutation = useMutation({
     mutationFn: stockService.adjustStock,
@@ -197,14 +264,6 @@ function AdjustModal({ products, warehouses, onClose, onSuccess }: { products: P
       }
     >
       <form id="adjust-form" onSubmit={handleSubmit((v) => mutation.mutate(v))} className="space-y-4">
-        <Select label="Product" error={errors.productId?.message} {...register('productId')}>
-          <option value="">Select product</option>
-          {products.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </Select>
         <Select label="Warehouse" error={errors.warehouseId?.message} {...register('warehouseId')}>
           <option value="">Select warehouse</option>
           {warehouses.map((w) => (
@@ -213,6 +272,25 @@ function AdjustModal({ products, warehouses, onClose, onSuccess }: { products: P
             </option>
           ))}
         </Select>
+        <Select
+          label="Product"
+          disabled={!warehouseId}
+          hint={warehouseId ? undefined : 'Select a warehouse first to see the products assigned to it.'}
+          error={errors.productId?.message}
+          {...register('productId')}
+        >
+          <option value="">{warehouseId ? 'Select product' : 'Select a warehouse first'}</option>
+          {productOptions.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </Select>
+        {warehouseId && productOptions.length === 0 && (
+          <p className="text-xs text-amber-600">
+            No products are assigned to this warehouse yet{type === 'DECREASE' ? ' - use Increase to assign one first' : ''}.
+          </p>
+        )}
         <div className="grid grid-cols-2 gap-3">
           <Select label="Direction" {...register('type')}>
             <option value="INCREASE">Increase</option>
@@ -238,8 +316,22 @@ function ConsumeModal({ products, warehouses, onClose, onSuccess }: { products: 
   const {
     register,
     handleSubmit,
+    watch,
+    setValue,
     formState: { errors },
   } = useForm<z.infer<typeof consumeSchema>>({ resolver: formResolver(consumeSchema) });
+
+  const assignments = useProductAssignments();
+  const warehouseId = watch('warehouseId');
+  const productId = watch('productId');
+  const productOptions = filterProductsForWarehouse(products, warehouseId, assignments, false);
+
+  useEffect(() => {
+    if (productId && warehouseId && !productOptions.some((p) => p.id === productId)) {
+      setValue('productId', '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [warehouseId]);
 
   const mutation = useMutation({
     mutationFn: stockService.consumeStock,
@@ -267,14 +359,6 @@ function ConsumeModal({ products, warehouses, onClose, onSuccess }: { products: 
       }
     >
       <form id="consume-form" onSubmit={handleSubmit((v) => mutation.mutate(v))} className="space-y-4">
-        <Select label="Product" error={errors.productId?.message} {...register('productId')}>
-          <option value="">Select product</option>
-          {products.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </Select>
         <Select label="Warehouse" error={errors.warehouseId?.message} {...register('warehouseId')}>
           <option value="">Select warehouse</option>
           {warehouses.map((w) => (
@@ -283,6 +367,23 @@ function ConsumeModal({ products, warehouses, onClose, onSuccess }: { products: 
             </option>
           ))}
         </Select>
+        <Select
+          label="Product"
+          disabled={!warehouseId}
+          hint={warehouseId ? undefined : 'Select a warehouse first to see the products assigned to it.'}
+          error={errors.productId?.message}
+          {...register('productId')}
+        >
+          <option value="">{warehouseId ? 'Select product' : 'Select a warehouse first'}</option>
+          {productOptions.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </Select>
+        {warehouseId && productOptions.length === 0 && (
+          <p className="text-xs text-amber-600">No products are assigned to this warehouse yet.</p>
+        )}
         <Input label="Quantity used" type="number" step="0.01" error={errors.quantity?.message} {...register('quantity')} />
         <Input label="Reason (optional)" placeholder="Kitchen prep" error={errors.reason?.message} {...register('reason')} />
       </form>
@@ -304,8 +405,25 @@ function TransferModal({ products, warehouses, onClose, onSuccess }: { products:
   const {
     register,
     handleSubmit,
+    watch,
+    setValue,
     formState: { errors },
   } = useForm<z.infer<typeof transferSchema>>({ resolver: formResolver(transferSchema) });
+
+  const assignments = useProductAssignments();
+  const fromWarehouseId = watch('fromWarehouseId');
+  const productId = watch('productId');
+  // Only the source warehouse constrains which products can be picked - stock has to already be
+  // there to transfer it out. The destination doesn't need a prior assignment; receiving a
+  // transfer is exactly how it gets one.
+  const productOptions = filterProductsForWarehouse(products, fromWarehouseId, assignments, false);
+
+  useEffect(() => {
+    if (productId && fromWarehouseId && !productOptions.some((p) => p.id === productId)) {
+      setValue('productId', '');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromWarehouseId]);
 
   const mutation = useMutation({
     mutationFn: stockService.transferStock,
@@ -335,7 +453,7 @@ function TransferModal({ products, warehouses, onClose, onSuccess }: { products:
       <form id="transfer-form" onSubmit={handleSubmit((v) => mutation.mutate(v))} className="space-y-4">
         <Select label="Product" error={errors.productId?.message} {...register('productId')}>
           <option value="">Select product</option>
-          {products.map((p) => (
+          {productOptions.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
             </option>
@@ -359,6 +477,9 @@ function TransferModal({ products, warehouses, onClose, onSuccess }: { products:
             ))}
           </Select>
         </div>
+        {fromWarehouseId && productOptions.length === 0 && (
+          <p className="text-xs text-amber-600">No products are assigned to the source warehouse yet.</p>
+        )}
         <Input label="Quantity" type="number" step="0.01" error={errors.quantity?.message} {...register('quantity')} />
         <Input label="Notes (optional)" error={errors.notes?.message} {...register('notes')} />
       </form>

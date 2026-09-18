@@ -17,7 +17,6 @@ export default function InventoryReportPage() {
 
   const columns: Column<StockReportRow>[] = [
     { header: 'Product', accessor: (r) => <span className="font-medium text-slate-900">{r.productName}</span> },
-    { header: 'SKU', accessor: (r) => r.sku },
     { header: 'Category', accessor: (r) => r.category },
     { header: 'Warehouse', accessor: (r) => r.warehouse },
     { header: 'Quantity', accessor: (r) => `${r.quantity} ${r.unit}` },
@@ -32,7 +31,7 @@ export default function InventoryReportPage() {
 
       {isLoading ? (
         <Card>
-          <TableSkeleton cols={7} />
+          <TableSkeleton cols={6} />
         </Card>
       ) : isError || !data ? (
         <Card>

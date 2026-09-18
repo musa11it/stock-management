@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { prisma, createTestUser, createTestCategory, createTestUnit, createTestProduct, uniqueSuffix } from './helpers';
+import { prisma, createTestUser, createTestCategory, createTestUnit, createTestProduct, uniqueSuffix, getTestSalesWarehouseId } from './helpers';
 import { adjustStock } from '../services/stock.service';
 import { createCustomerOrder, getOrderForCustomer, updateSaleStatus } from '../services/sale.service';
 
@@ -19,9 +19,8 @@ describe('customer ordering deducts stock and staff manage fulfillment', () => {
     const staff = await createTestUser('MANAGER');
     const category = await createTestCategory();
     const unit = await createTestUnit();
-    // getDefaultWarehouseId() picks the oldest active warehouse - backdate this one so the
-    // test deterministically targets it without touching any other (e.g. seed) warehouse.
-    const warehouse = await prisma.warehouse.create({ data: { name: `Test Warehouse ${uniqueSuffix()}`, createdAt: new Date(0) } });
+    // createCustomerOrder() always resolves the shared Finished Goods Store internally - use the
+    // real one so stock is where the order will actually look for it.
     const bread = await createTestProduct({ categoryId: category.id, unitId: unit.id });
 
     customerId = customer.id;
@@ -29,7 +28,7 @@ describe('customer ordering deducts stock and staff manage fulfillment', () => {
     staffId = staff.id;
     categoryId = category.id;
     unitId = unit.id;
-    warehouseId = warehouse.id;
+    warehouseId = await getTestSalesWarehouseId();
     breadId = bread.id;
 
     await adjustStock({ productId: breadId, warehouseId, type: 'INCREASE', quantity: 10, reason: 'seed', userId: staffId });
@@ -53,11 +52,12 @@ describe('customer ordering deducts stock and staff manage fulfillment', () => {
     await prisma.recipeIngredient.deleteMany({ where: { productId: breadId } });
     await prisma.recipe.deleteMany({ where: { menuItemId } });
     await prisma.menuItem.deleteMany({ where: { id: menuItemId } });
+    await prisma.inventoryBatch.deleteMany({ where: { productId: breadId } });
     await prisma.inventory.deleteMany({ where: { productId: breadId } });
     await prisma.product.deleteMany({ where: { id: breadId } });
     await prisma.category.deleteMany({ where: { id: categoryId } });
     await prisma.unit.deleteMany({ where: { id: unitId } });
-    await prisma.warehouse.deleteMany({ where: { id: warehouseId } });
+    // warehouseId is the shared Finished Goods Store now - never delete it.
     await prisma.user.deleteMany({ where: { id: { in: [customerId, otherCustomerId, staffId] } } });
     await prisma.$disconnect();
   });

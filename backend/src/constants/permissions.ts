@@ -13,6 +13,8 @@ export const PERMISSIONS = [
   'menu.read', 'menu.create', 'menu.update', 'menu.delete',
   'sales.read', 'sales.create', 'sales.update', 'sales.delete',
   'orders.create', 'orders.read',
+  'production.read', 'production.create', 'production.complete',
+  'expenses.read', 'expenses.create',
   'reports.read',
   'settings.manage',
   'audit_logs.read',
@@ -34,19 +36,22 @@ export const ROLE_PERMISSIONS: Record<'MANAGER' | 'STAFF' | 'RETAIL_USER', Permi
     'recipes.read', 'recipes.create', 'recipes.update', 'recipes.delete',
     'menu.read', 'menu.create', 'menu.update', 'menu.delete',
     'sales.read', 'sales.create', 'sales.update',
+    'production.read', 'production.create', 'production.complete',
+    'expenses.read', 'expenses.create',
     'reports.read',
     'users.read',
   ],
+  // Operational only: can view assigned stock, record consumption, report wastage, and take/
+  // check on customer orders via the POS-style Sales screen. Deliberately excludes supplier
+  // and purchase visibility (that's procurement, a MANAGER concern) and recipe definitions
+  // (menu/recipe composition is also MANAGER-owned) - staff don't need either to do their job.
   STAFF: [
     'products.read',
     'categories.read',
     'units.read',
-    'suppliers.read',
-    'purchases.read',
     'warehouses.read',
     'stock.read', 'stock.consume',
     'wastage.read', 'wastage.create',
-    'recipes.read',
     'menu.read',
     'sales.read', 'sales.create', 'sales.update',
   ],

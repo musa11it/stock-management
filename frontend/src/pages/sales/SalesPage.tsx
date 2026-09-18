@@ -4,7 +4,7 @@ import { useForm, useFieldArray } from 'react-hook-form';
 import { formResolver } from '@/lib/zodForm';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
-import { Plus, Receipt, Trash2, Ban, Check, Globe, Store } from 'lucide-react';
+import { Plus, Receipt, Trash2, Ban, Check, Globe, Store, FileText } from 'lucide-react';
 import { PageHeader } from '@/components/common/PageHeader';
 import { Can } from '@/components/common/Can';
 import { Card } from '@/components/ui/Card';
@@ -21,15 +21,14 @@ import { Badge } from '@/components/ui/Badge';
 import { Pagination } from '@/components/ui/Pagination';
 import { saleCrud, updateSaleStatus } from '@/services/sale.service';
 import { menuItemService } from '@/services/recipe.service';
-import { warehouseService } from '@/services/catalog.service';
 import { getErrorMessage } from '@/lib/apiClient';
+import { ReceiptModal } from '@/components/receipt/Receipt';
 import type { Sale, SaleStatus } from '@/types';
 
 const statusTone: Record<SaleStatus, 'amber' | 'green' | 'red'> = { PENDING: 'amber', COMPLETED: 'green', CANCELLED: 'red' };
 
 const itemSchema = z.object({ menuItemId: z.string().uuid('Select an item'), quantity: z.coerce.number().int().positive('Must be > 0') });
 const schema = z.object({
-  warehouseId: z.string().uuid('Select a warehouse'),
   paymentMethod: z.enum(['CASH', 'CARD', 'MOBILE_MONEY', 'BANK_TRANSFER', 'OTHER']),
   customerName: z.string().optional(),
   discount: z.coerce.number().min(0).default(0),
@@ -44,6 +43,7 @@ export default function SalesPage() {
   const [status, setStatus] = useState('');
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [cancelTarget, setCancelTarget] = useState<Sale | null>(null);
+  const [receiptTarget, setReceiptTarget] = useState<Sale | null>(null);
 
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['sales', page, status],
@@ -52,7 +52,6 @@ export default function SalesPage() {
     refetchInterval: 10000,
   });
   const { data: menuItems } = useQuery({ queryKey: ['menu', 'all'], queryFn: () => menuItemService.list({ limit: 200, isActive: true }) });
-  const { data: warehouses } = useQuery({ queryKey: ['warehouses', 'all'], queryFn: () => warehouseService.list({ limit: 100 }) });
 
   const invalidateAll = () => {
     queryClient.invalidateQueries({ queryKey: ['sales'] });
@@ -119,34 +118,48 @@ export default function SalesPage() {
     {
       header: '',
       accessor: (s) => (
-        <Can permission="sales.update">
-          <div className="flex justify-end gap-1">
-            {s.status === 'PENDING' && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  fulfillMutation.mutate(s.id);
-                }}
-                className="rounded-md p-1.5 text-emerald-600 hover:bg-emerald-50"
-                title="Mark fulfilled"
-              >
-                <Check className="h-4 w-4" />
-              </button>
-            )}
-            {(s.status === 'PENDING' || s.status === 'COMPLETED') && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setCancelTarget(s);
-                }}
-                className="rounded-md p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600"
-                title="Cancel"
-              >
-                <Ban className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-        </Can>
+        <div className="flex justify-end gap-1">
+          {s.status === 'COMPLETED' && (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                setReceiptTarget(s);
+              }}
+              className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+              title="View receipt"
+            >
+              <FileText className="h-4 w-4" />
+            </button>
+          )}
+          <Can permission="sales.update">
+            <>
+              {s.status === 'PENDING' && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    fulfillMutation.mutate(s.id);
+                  }}
+                  className="rounded-md p-1.5 text-emerald-600 hover:bg-emerald-50"
+                  title="Mark fulfilled"
+                >
+                  <Check className="h-4 w-4" />
+                </button>
+              )}
+              {(s.status === 'PENDING' || s.status === 'COMPLETED') && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCancelTarget(s);
+                  }}
+                  className="rounded-md p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600"
+                  title="Cancel"
+                >
+                  <Ban className="h-4 w-4" />
+                </button>
+              )}
+            </>
+          </Can>
+        </div>
       ),
     },
   ];
@@ -199,12 +212,13 @@ export default function SalesPage() {
       {isCreateOpen && (
         <CreateSaleModal
           menuItems={menuItems?.data ?? []}
-          warehouses={warehouses?.data ?? []}
           isSubmitting={createMutation.isPending}
           onClose={() => setIsCreateOpen(false)}
           onSubmit={(values) => createMutation.mutate(values)}
         />
       )}
+
+      {receiptTarget && <ReceiptModal sale={receiptTarget} onClose={() => setReceiptTarget(null)} />}
 
       <ConfirmDialog
         isOpen={!!cancelTarget}
@@ -221,13 +235,11 @@ export default function SalesPage() {
 
 function CreateSaleModal({
   menuItems,
-  warehouses,
   isSubmitting,
   onClose,
   onSubmit,
 }: {
   menuItems: { id: string; name: string; price: string }[];
-  warehouses: { id: string; name: string }[];
   isSubmitting: boolean;
   onClose: () => void;
   onSubmit: (values: FormValues) => void;
@@ -270,14 +282,6 @@ function CreateSaleModal({
     >
       <form id="sale-form" onSubmit={handleSubmit(onSubmit)} className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <Select label="Warehouse" error={errors.warehouseId?.message} {...register('warehouseId')}>
-            <option value="">Select warehouse</option>
-            {warehouses.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.name}
-              </option>
-            ))}
-          </Select>
           <Select label="Payment method" {...register('paymentMethod')}>
             {(['CASH', 'CARD', 'MOBILE_MONEY', 'BANK_TRANSFER', 'OTHER'] as const).map((m) => (
               <option key={m} value={m}>
@@ -285,8 +289,8 @@ function CreateSaleModal({
               </option>
             ))}
           </Select>
+          <Input label="Customer name (optional)" {...register('customerName')} />
         </div>
-        <Input label="Customer name (optional)" {...register('customerName')} />
 
         <div>
           <div className="mb-2 flex items-center justify-between">

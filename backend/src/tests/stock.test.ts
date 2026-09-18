@@ -31,6 +31,7 @@ describe('stock ledger accuracy', () => {
     }
     await prisma.stockMovement.deleteMany({ where: { productId } });
     await prisma.stockAdjustment.deleteMany({ where: { productId } });
+    await prisma.inventoryBatch.deleteMany({ where: { productId } });
     await prisma.inventory.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.category.deleteMany({ where: { id: categoryId } });
@@ -144,6 +145,7 @@ describe('stock transfers carry the cost basis to the destination warehouse', ()
       return;
     }
     await prisma.stockMovement.deleteMany({ where: { productId } });
+    await prisma.inventoryBatch.deleteMany({ where: { productId } });
     await prisma.inventory.deleteMany({ where: { productId } });
     await prisma.product.deleteMany({ where: { id: productId } });
     await prisma.category.deleteMany({ where: { id: categoryId } });
@@ -183,6 +185,7 @@ describe('stock transfers carry the cost basis to the destination warehouse', ()
     expect(fresh!.averageCost.toNumber()).toBe(500);
 
     await prisma.stockMovement.deleteMany({ where: { productId, warehouseId: warehouseC.id } });
+    await prisma.inventoryBatch.deleteMany({ where: { productId, warehouseId: warehouseC.id } });
     await prisma.inventory.deleteMany({ where: { productId, warehouseId: warehouseC.id } });
     await prisma.warehouse.deleteMany({ where: { id: warehouseC.id } });
   });

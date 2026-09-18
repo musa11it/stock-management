@@ -44,5 +44,8 @@ Thumbs.db
 # Prisma
 backend/prisma/*.db
 
+# TypeScript incremental build cache
+*.tsbuildinfo
+
 # Misc local files
 *.local

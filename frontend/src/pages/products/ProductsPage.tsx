@@ -4,7 +4,8 @@ import { useForm } from 'react-hook-form';
 import { formResolver } from '@/lib/zodForm';
 import { z } from 'zod';
 import toast from 'react-hot-toast';
-import { Plus, Pencil, Trash2, Package, Search } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Plus, Pencil, Trash2, Package, Search, Tag } from 'lucide-react';
 import { PageHeader } from '@/components/common/PageHeader';
 import { Can } from '@/components/common/Can';
 import { Card } from '@/components/ui/Card';
@@ -21,28 +22,58 @@ import { ErrorState } from '@/components/ui/ErrorState';
 import { Badge } from '@/components/ui/Badge';
 import { Pagination } from '@/components/ui/Pagination';
 import { productService, categoryService, unitService } from '@/services/catalog.service';
+import { listProductForSale } from '@/services/recipe.service';
 import { getErrorMessage } from '@/lib/apiClient';
 import type { Product } from '@/types';
 import { useDebouncedValue } from '@/hooks/useDebouncedValue';
+import { useAuth } from '@/hooks/useAuth';
+
+const PRODUCT_TYPES = [
+  { value: 'RAW_MATERIAL', label: 'Raw Material' },
+  { value: 'FINISHED_PRODUCT', label: 'Finished Product' },
+  { value: 'DIRECT_SALE', label: 'Direct Sale' },
+  { value: 'PACKAGING', label: 'Packaging' },
+] as const;
+
+const PRODUCT_TYPE_LABEL: Record<string, string> = Object.fromEntries(PRODUCT_TYPES.map((t) => [t.value, t.label]));
+const PRODUCT_TYPE_TONE: Record<string, 'slate' | 'green' | 'blue' | 'purple'> = {
+  RAW_MATERIAL: 'blue',
+  FINISHED_PRODUCT: 'green',
+  DIRECT_SALE: 'purple',
+  PACKAGING: 'slate',
+};
 
 const schema = z
   .object({
     name: z.string().min(1, 'Name is required').max(200),
-    sku: z.string().max(40, 'Keep it under 40 characters').optional(),
-    barcode: z.string().max(64).optional(),
     description: z.string().max(2000).optional(),
     categoryId: z.string().uuid('Select a category'),
     unitId: z.string().uuid('Select a unit'),
-    minimumStock: z.coerce.number().min(0, 'Cannot be negative'),
+    // Optional: products created before this classification existed stay valid unclassified -
+    // but once set, it's what Production's Finished Product / Raw Material dropdowns filter on.
+    // Kept as a plain string (not z.enum) so the select's blank "Not classified" option ("")
+    // passes validation - translated to undefined at the mutation boundary before it's sent.
+    type: z.string().optional(),
+    // Optional: none of these have to be decided at creation time - minimumStock/costPrice
+    // default to 0 (same as the backend) if left blank, exactly like maximumStock/sellingPrice
+    // already do.
+    minimumStock: z.coerce.number().min(0, 'Cannot be negative').optional(),
     maximumStock: z.coerce.number().min(0, 'Cannot be negative').optional(),
-    costPrice: z.coerce.number().min(0, 'Cannot be negative'),
-    sellingPrice: z.coerce.number().min(0, 'Cannot be negative'),
+    costPrice: z.coerce.number().min(0, 'Cannot be negative').optional(),
+    sellingPrice: z.coerce.number().min(0, 'Cannot be negative').optional(),
+    // Optional and freely toggleable at any time, including when editing an already-perishable
+    // product back to not-perishable - never locked or required to be set either way.
     isPerishable: z.boolean(),
-    shelfLifeDays: z.coerce.number().min(0).max(3650).optional(),
+    // Required (and positive) only when isPerishable is checked - enforced below via .refine().
+    shelfLifeDays: z.coerce.number().int().positive('Shelf life must be a positive number of days').max(3650).optional(),
   })
-  .refine((v) => v.maximumStock === undefined || v.maximumStock >= v.minimumStock, {
+  .refine((v) => v.maximumStock === undefined || v.maximumStock >= (v.minimumStock ?? 0), {
     message: 'Must be greater than or equal to minimum stock',
     path: ['maximumStock'],
+  })
+  .refine((v) => !v.isPerishable || v.shelfLifeDays !== undefined, {
+    message: 'Shelf life (days) is required for perishable products',
+    path: ['shelfLifeDays'],
   });
 type FormValues = z.infer<typeof schema>;
 
@@ -52,6 +83,10 @@ function totalQty(p: Product): number {
 
 export default function ProductsPage() {
   const queryClient = useQueryClient();
+  // Cost is financial/profit information - staff (who need this page read-only to see what's
+  // stocked) shouldn't see it, only roles with reporting access.
+  const { hasPermission } = useAuth();
+  const canSeeCost = hasPermission('reports.read');
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebouncedValue(search, 400);
@@ -67,7 +102,14 @@ export default function ProductsPage() {
   const { data: units } = useQuery({ queryKey: ['units', 'all'], queryFn: () => unitService.list({ limit: 100 }) });
 
   const createMutation = useMutation({
-    mutationFn: (values: FormValues) => productService.create({ ...values, sku: values.sku || undefined, barcode: values.barcode || undefined }),
+    mutationFn: (values: FormValues) =>
+      productService.create({
+        ...values,
+        type: values.type || undefined,
+        minimumStock: values.minimumStock ?? 0,
+        costPrice: values.costPrice ?? 0,
+        shelfLifeDays: values.isPerishable ? values.shelfLifeDays : undefined,
+      }),
     onSuccess: () => {
       toast.success('Product created successfully');
       queryClient.invalidateQueries({ queryKey: ['products'] });
@@ -78,11 +120,28 @@ export default function ProductsPage() {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, values }: { id: string; values: FormValues }) =>
-      productService.update(id, { ...values, barcode: values.barcode || null }),
+      productService.update(id, {
+        ...values,
+        type: values.type || null,
+        minimumStock: values.minimumStock ?? 0,
+        costPrice: values.costPrice ?? 0,
+        sellingPrice: values.sellingPrice ?? null,
+        shelfLifeDays: values.isPerishable ? values.shelfLifeDays : null,
+      }),
     onSuccess: () => {
       toast.success('Product updated successfully');
       queryClient.invalidateQueries({ queryKey: ['products'] });
       setModalState(null);
+    },
+    onError: (err) => toast.error(getErrorMessage(err)),
+  });
+
+  const listForSaleMutation = useMutation({
+    mutationFn: (productId: string) => listProductForSale(productId),
+    onSuccess: () => {
+      toast.success('Listed for sale - it now appears on the Menu, ready to sell');
+      queryClient.invalidateQueries({ queryKey: ['products'] });
+      queryClient.invalidateQueries({ queryKey: ['menu'] });
     },
     onError: (err) => toast.error(getErrorMessage(err)),
   });
@@ -103,12 +162,16 @@ export default function ProductsPage() {
   const columns: Column<Product>[] = [
     {
       header: 'Product',
-      accessor: (p) => (
-        <div>
-          <p className="font-medium text-slate-900">{p.name}</p>
-          <p className="text-xs text-slate-400">{p.sku}</p>
-        </div>
-      ),
+      accessor: (p) => <p className="font-medium text-slate-900">{p.name}</p>,
+    },
+    {
+      header: 'Type',
+      accessor: (p) =>
+        p.type ? (
+          <Badge tone={PRODUCT_TYPE_TONE[p.type]}>{PRODUCT_TYPE_LABEL[p.type]}</Badge>
+        ) : (
+          <span className="text-xs text-slate-400">Not classified</span>
+        ),
     },
     { header: 'Category', accessor: (p) => p.category?.name },
     { header: 'Unit', accessor: (p) => p.unit?.abbreviation },
@@ -124,8 +187,37 @@ export default function ProductsPage() {
         );
       },
     },
-    { header: 'Cost', accessor: (p) => Number(p.costPrice).toLocaleString() },
-    { header: 'Price', accessor: (p) => Number(p.sellingPrice).toLocaleString() },
+    ...(canSeeCost ? [{ header: 'Cost', accessor: (p: Product) => Number(p.costPrice).toLocaleString() }] : []),
+    { header: 'Price', accessor: (p) => (p.sellingPrice ? Number(p.sellingPrice).toLocaleString() : '—') },
+    {
+      header: 'Sale',
+      accessor: (p) => {
+        if (p.directSaleMenuItem) {
+          return (
+            <Link to="/menu" className="flex items-center gap-1 text-xs font-medium text-emerald-600 hover:underline">
+              <Tag className="h-3.5 w-3.5" /> Listed
+            </Link>
+          );
+        }
+        if (!p.sellingPrice) return <span className="text-xs text-slate-400">Set a price first</span>;
+        return (
+          <Can permission="menu.create">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              isLoading={listForSaleMutation.isPending && listForSaleMutation.variables === p.id}
+              onClick={(e) => {
+                e.stopPropagation();
+                listForSaleMutation.mutate(p.id);
+              }}
+            >
+              <Tag className="h-3.5 w-3.5" /> List for Sale
+            </Button>
+          </Can>
+        );
+      },
+    },
     { header: 'Status', accessor: (p) => <Badge tone={p.isActive ? 'green' : 'slate'}>{p.isActive ? 'Active' : 'Inactive'}</Badge> },
     {
       header: '',
@@ -178,7 +270,7 @@ export default function ProductsPage() {
           <div className="relative max-w-xs">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
             <Input
-              placeholder="Search by name, SKU, barcode..."
+              placeholder="Search by name..."
               className="pl-9"
               value={search}
               onChange={(e) => {
@@ -190,7 +282,7 @@ export default function ProductsPage() {
         </div>
 
         {isLoading ? (
-          <TableSkeleton cols={7} />
+          <TableSkeleton cols={9} />
         ) : isError ? (
           <ErrorState message={getErrorMessage(error)} onRetry={refetch} />
         ) : !data || data.data.length === 0 ? (
@@ -231,6 +323,8 @@ export default function ProductsPage() {
   );
 }
 
+const NEW_OPTION_VALUE = '__new__';
+
 function ProductFormModal({
   product,
   categories,
@@ -246,30 +340,66 @@ function ProductFormModal({
   onClose: () => void;
   onSubmit: (values: FormValues) => void;
 }) {
+  const queryClient = useQueryClient();
   const {
     register,
     handleSubmit,
     watch,
+    setValue,
     formState: { errors },
   } = useForm<FormValues>({
     resolver: formResolver(schema),
     defaultValues: {
       name: product?.name ?? '',
-      sku: product?.sku ?? '',
-      barcode: product?.barcode ?? '',
       description: product?.description ?? '',
       categoryId: product?.categoryId ?? '',
       unitId: product?.unitId ?? '',
-      minimumStock: product ? Number(product.minimumStock) : 0,
+      type: product?.type ?? '',
+      minimumStock: product?.minimumStock ? Number(product.minimumStock) : undefined,
       maximumStock: product?.maximumStock ? Number(product.maximumStock) : undefined,
-      costPrice: product ? Number(product.costPrice) : 0,
-      sellingPrice: product ? Number(product.sellingPrice) : 0,
+      costPrice: product?.costPrice ? Number(product.costPrice) : undefined,
+      sellingPrice: product?.sellingPrice ? Number(product.sellingPrice) : undefined,
       isPerishable: product?.isPerishable ?? false,
       shelfLifeDays: product?.shelfLifeDays ?? undefined,
     },
   });
 
   const isPerishable = watch('isPerishable');
+
+  // Inline "+ Add Category" / "+ Add Unit" - create the reference entity without leaving this
+  // form, then auto-select it. Reuses the existing Category/Unit models and their existing
+  // uniqueness constraints (the API rejects a duplicate name the same way the Categories/Units
+  // pages already do).
+  const [addingCategory, setAddingCategory] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [addingUnit, setAddingUnit] = useState(false);
+  const [newUnitName, setNewUnitName] = useState('');
+  const [newUnitAbbreviation, setNewUnitAbbreviation] = useState('');
+
+  const createCategoryMutation = useMutation({
+    mutationFn: (name: string) => categoryService.create({ name }),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ['categories', 'all'] });
+      setValue('categoryId', created.id, { shouldValidate: true });
+      setAddingCategory(false);
+      setNewCategoryName('');
+      toast.success(`Category "${created.name}" created`);
+    },
+    onError: (err) => toast.error(getErrorMessage(err)),
+  });
+
+  const createUnitMutation = useMutation({
+    mutationFn: (input: { name: string; abbreviation: string }) => unitService.create(input),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({ queryKey: ['units', 'all'] });
+      setValue('unitId', created.id, { shouldValidate: true });
+      setAddingUnit(false);
+      setNewUnitName('');
+      setNewUnitAbbreviation('');
+      toast.success(`Unit "${created.name}" created`);
+    },
+    onError: (err) => toast.error(getErrorMessage(err)),
+  });
 
   return (
     <Modal
@@ -289,50 +419,167 @@ function ProductFormModal({
       }
     >
       <form id="product-form" onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+        <Input label="Name" error={errors.name?.message} {...register('name')} />
+        <Select
+          label="Product type"
+          hint="Determines where this product shows up - e.g. only Finished Product items can be produced, only Raw Material items can be used as ingredients."
+          error={errors.type?.message}
+          {...register('type')}
+        >
+          <option value="">Not classified</option>
+          {PRODUCT_TYPES.map((t) => (
+            <option key={t.value} value={t.value}>
+              {t.label}
+            </option>
+          ))}
+        </Select>
         <div className="grid grid-cols-2 gap-3">
-          <Input label="Name" error={errors.name?.message} {...register('name')} />
-          <Input
-            label="SKU (optional)"
-            placeholder="Auto-generated if left blank"
-            hint="A unique code for barcode scanning and quick lookup."
-            error={errors.sku?.message}
-            {...register('sku')}
-          />
+          <div>
+            <Select
+              label="Category"
+              error={errors.categoryId?.message}
+              {...register('categoryId')}
+              onChange={(e) => {
+                if (e.target.value === NEW_OPTION_VALUE) {
+                  setAddingCategory(true);
+                  return;
+                }
+                register('categoryId').onChange(e);
+              }}
+            >
+              <option value="">Select category</option>
+              {categories.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+              <option value={NEW_OPTION_VALUE}>+ Add Category</option>
+            </Select>
+            {addingCategory && (
+              <div className="mt-2 flex items-end gap-2 rounded-lg border border-slate-200 p-2">
+                <Input
+                  className="flex-1"
+                  label="New category name"
+                  value={newCategoryName}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  isLoading={createCategoryMutation.isPending}
+                  disabled={!newCategoryName.trim()}
+                  onClick={() => createCategoryMutation.mutate(newCategoryName.trim())}
+                >
+                  Add
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setAddingCategory(false)}>
+                  Cancel
+                </Button>
+              </div>
+            )}
+          </div>
+          <div>
+            <Select
+              label="Unit"
+              error={errors.unitId?.message}
+              {...register('unitId')}
+              onChange={(e) => {
+                if (e.target.value === NEW_OPTION_VALUE) {
+                  setAddingUnit(true);
+                  return;
+                }
+                register('unitId').onChange(e);
+              }}
+            >
+              <option value="">Select unit</option>
+              {units.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} ({u.abbreviation})
+                </option>
+              ))}
+              <option value={NEW_OPTION_VALUE}>+ Add Unit</option>
+            </Select>
+            {addingUnit && (
+              <div className="mt-2 flex items-end gap-2 rounded-lg border border-slate-200 p-2">
+                <Input className="flex-1" label="Name" placeholder="Kilogram" value={newUnitName} onChange={(e) => setNewUnitName(e.target.value)} />
+                <Input
+                  className="w-20"
+                  label="Abbr."
+                  placeholder="KG"
+                  value={newUnitAbbreviation}
+                  onChange={(e) => setNewUnitAbbreviation(e.target.value)}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  isLoading={createUnitMutation.isPending}
+                  disabled={!newUnitName.trim() || !newUnitAbbreviation.trim()}
+                  onClick={() => createUnitMutation.mutate({ name: newUnitName.trim(), abbreviation: newUnitAbbreviation.trim() })}
+                >
+                  Add
+                </Button>
+                <Button type="button" size="sm" variant="ghost" onClick={() => setAddingUnit(false)}>
+                  Cancel
+                </Button>
+              </div>
+            )}
+          </div>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <Select label="Category" error={errors.categoryId?.message} {...register('categoryId')}>
-            <option value="">Select category</option>
-            {categories.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </Select>
-          <Select label="Unit" error={errors.unitId?.message} {...register('unitId')}>
-            <option value="">Select unit</option>
-            {units.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name} ({u.abbreviation})
-              </option>
-            ))}
-          </Select>
-        </div>
-        <Input label="Barcode (optional)" error={errors.barcode?.message} {...register('barcode')} />
         <Textarea label="Description" rows={2} error={errors.description?.message} {...register('description')} />
         <div className="grid grid-cols-3 gap-3">
-          <Input label="Minimum stock" type="number" step="0.01" error={errors.minimumStock?.message} {...register('minimumStock')} />
-          <Input label="Maximum stock" type="number" step="0.01" error={errors.maximumStock?.message} {...register('maximumStock')} />
-          <Input label="Cost price" type="number" step="0.01" error={errors.costPrice?.message} {...register('costPrice')} />
+          <Input
+            label="Minimum stock (optional)"
+            type="number"
+            step="0.01"
+            placeholder="0"
+            hint="Defaults to 0 if left blank."
+            error={errors.minimumStock?.message}
+            {...register('minimumStock')}
+          />
+          <Input
+            label="Maximum stock (optional)"
+            type="number"
+            step="0.01"
+            error={errors.maximumStock?.message}
+            {...register('maximumStock')}
+          />
+          <Input
+            label="Cost price (optional)"
+            type="number"
+            step="0.01"
+            placeholder="0"
+            hint="Defaults to 0 if left blank."
+            error={errors.costPrice?.message}
+            {...register('costPrice')}
+          />
         </div>
-        <Input label="Selling price" type="number" step="0.01" error={errors.sellingPrice?.message} {...register('sellingPrice')} />
-        <div className="flex items-center gap-2">
-          <input id="isPerishable" type="checkbox" className="h-4 w-4 rounded border-slate-300" {...register('isPerishable')} />
-          <label htmlFor="isPerishable" className="text-sm text-slate-700">
-            This product is perishable
-          </label>
+        <Input
+          label="Selling price (optional)"
+          type="number"
+          step="0.01"
+          hint="Only for items sold directly, e.g. bottled drinks. Leave blank otherwise."
+          error={errors.sellingPrice?.message}
+          {...register('sellingPrice')}
+        />
+        <div>
+          <div className="flex items-center gap-2">
+            <input id="isPerishable" type="checkbox" className="h-4 w-4 rounded border-slate-300" {...register('isPerishable')} />
+            <label htmlFor="isPerishable" className="text-sm text-slate-700">
+              This product is perishable
+            </label>
+          </div>
+          <p className="mt-1 text-xs text-slate-500">Optional - leave unchecked if it doesn't expire. Can be switched either way anytime, including when editing later.</p>
         </div>
         {isPerishable && (
-          <Input label="Shelf life (days)" type="number" error={errors.shelfLifeDays?.message} {...register('shelfLifeDays')} />
+          <Input
+            label="Shelf life (days)"
+            type="number"
+            min={1}
+            step={1}
+            hint="Expiry date is calculated automatically as Received Date + Shelf Life each time stock comes in."
+            error={errors.shelfLifeDays?.message}
+            {...register('shelfLifeDays')}
+          />
         )}
       </form>
     </Modal>

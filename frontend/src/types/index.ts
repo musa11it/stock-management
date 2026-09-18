@@ -45,23 +45,27 @@ export interface Warehouse {
   isActive: boolean;
 }
 
+export type ProductType = 'RAW_MATERIAL' | 'FINISHED_PRODUCT' | 'DIRECT_SALE' | 'PACKAGING';
+
 export interface Product {
   id: string;
   name: string;
-  sku: string;
-  barcode?: string | null;
   description?: string | null;
   categoryId: string;
   unitId: string;
+  /** Null for products created before classification existed - see backend schema notes. */
+  type?: ProductType | null;
   category: Category;
   unit: Unit;
   minimumStock: string;
   maximumStock?: string | null;
   costPrice: string;
-  sellingPrice: string;
+  sellingPrice?: string | null;
   isPerishable: boolean;
   shelfLifeDays?: number | null;
   isActive: boolean;
+  /** The "List for Sale" menu wrapper for this product, if one has been created - see MenuPage/ProductionPage. */
+  directSaleMenuItem?: { id: string; name: string; isActive: boolean } | null;
   inventories?: Inventory[];
 }
 
@@ -71,8 +75,10 @@ export interface Inventory {
   warehouseId: string;
   quantity: string;
   averageCost: string;
-  expiryDate?: string | null;
-  batchNumber?: string | null;
+  /** Soonest expiry among this product/warehouse's active batches - null if non-perishable or no dated batches remain. */
+  nearestExpiry?: string | null;
+  isExpired?: boolean;
+  isNearExpiry?: boolean;
   product: Product;
   warehouse: Warehouse;
 }
@@ -174,6 +180,9 @@ export interface Recipe {
   name: string;
   description?: string | null;
   menuItemId?: string | null;
+  /** Optional link to the finished Product it produces, so Production can load it. */
+  finishedProductId?: string | null;
+  finishedProduct?: Pick<Product, 'id' | 'name'> | null;
   ingredients: RecipeIngredient[];
 }
 
@@ -215,8 +224,11 @@ export interface Sale {
   customerName?: string | null;
   customerId?: string | null;
   createdAt: string;
+  /** When the order was accepted/confirmed (moved to COMPLETED) - null until then. */
+  confirmedAt?: string | null;
   warehouse: Warehouse;
-  createdBy: { id: string; firstName: string; lastName: string };
+  createdBy: { id: string; firstName: string; lastName: string; role: { name: RoleName } };
+  confirmedBy?: { id: string; firstName: string; lastName: string; role: { name: RoleName } } | null;
   customer?: { id: string; firstName: string; lastName: string; email: string } | null;
   items: SaleItem[];
 }
@@ -233,6 +245,69 @@ export interface AuditLog {
   userAgent?: string | null;
   createdAt: string;
   user?: { id: string; firstName: string; lastName: string; email: string } | null;
+}
+
+export type ExpenseCategory =
+  | 'SALARY'
+  | 'ELECTRICITY'
+  | 'WATER'
+  | 'RENT'
+  | 'TAX'
+  | 'TRANSPORT'
+  | 'MAINTENANCE'
+  | 'INTERNET'
+  | 'MARKETING'
+  | 'OTHER';
+export type ExpenseStatus = 'PAID';
+
+export interface Expense {
+  id: string;
+  expenseNumber: string;
+  category: ExpenseCategory;
+  recipientUserId?: string | null;
+  recipientName?: string | null;
+  amount: string;
+  status: ExpenseStatus;
+  description?: string | null;
+  createdAt: string;
+  createdBy: { id: string; firstName: string; lastName: string; role: { name: RoleName } };
+  recipientUser?: { id: string; firstName: string; lastName: string; role: { name: RoleName } } | null;
+}
+
+export type ProductionStatus = 'DRAFT' | 'COMPLETED' | 'CANCELLED';
+
+export interface ProductionMaterial {
+  id: string;
+  productId: string;
+  /** Which warehouse this material is drawn from - defaults to the run's sourceWarehouseId if not set. */
+  warehouseId?: string | null;
+  warehouse?: Warehouse | null;
+  quantity: string;
+  unitCost: string;
+  total: string;
+  product: Product;
+}
+
+export interface Production {
+  id: string;
+  productionNumber: string;
+  finishedProductId: string;
+  plannedQuantity: string;
+  actualQuantity?: string | null;
+  sourceWarehouseId: string;
+  destinationWarehouseId: string;
+  status: ProductionStatus;
+  unitCost?: string | null;
+  totalCost?: string | null;
+  batchNumber?: string | null;
+  notes?: string | null;
+  createdAt: string;
+  completedAt?: string | null;
+  finishedProduct: Product;
+  sourceWarehouse: Warehouse;
+  destinationWarehouse: Warehouse;
+  createdBy: { id: string; firstName: string; lastName: string; role: { name: RoleName } };
+  materials: ProductionMaterial[];
 }
 
 export interface Permission {
@@ -262,6 +337,22 @@ export interface ApiResponse<T> {
   meta?: PaginationMeta;
 }
 
+export type NetProfitPeriod = 'TODAY' | 'WEEK' | 'MONTH' | 'YEAR' | 'ALL';
+
+export interface NetProfitResult {
+  period: NetProfitPeriod;
+  periodStart: string | null;
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  wastageCost: number;
+  consumptionCost: number;
+  adjustmentLossCost: number;
+  adjustmentGainValue: number;
+  expenseCost: number;
+  netProfit: number;
+}
+
 export interface DashboardSummary {
   totalProducts: number;
   inventoryValue: number;
@@ -272,6 +363,15 @@ export interface DashboardSummary {
   todayWastage: { count: number; quantity: number };
   todayProfit: { revenue: number; cogs: number; profit: number };
   todayIngredientUsage: { productId: string; productName: string; unit: string; quantity: number; cost: number }[];
+  todayNetProfit: {
+    grossProfit: number;
+    wastageCost: number;
+    consumptionCost: number;
+    adjustmentLossCost: number;
+    adjustmentGainValue: number;
+    expenseCost: number;
+    netProfit: number;
+  };
   recentStockMovements: StockMovement[];
   salesOverview: { date: string; total: number }[];
 }

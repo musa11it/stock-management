@@ -35,6 +35,7 @@ describe('purchase receiving updates stock atomically', () => {
     await prisma.stockMovement.deleteMany({ where: { productId } });
     await prisma.purchaseItem.deleteMany({ where: { productId } });
     await prisma.purchase.deleteMany({ where: { supplierId } });
+    await prisma.inventoryBatch.deleteMany({ where: { productId } });
     await prisma.inventory.deleteMany({ where: { productId } });
     await prisma.supplier.deleteMany({ where: { id: supplierId } });
     await prisma.product.deleteMany({ where: { id: productId } });

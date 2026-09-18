@@ -5,11 +5,12 @@ import { resolvePagination, buildMeta } from '../utils/pagination';
 import { writeAuditLog } from './auditLog.service';
 import { applyStockMovement } from './inventory.service';
 import { generateDocNumber } from '../utils/docNumber';
-import { getDefaultWarehouseId } from './warehouse.service';
+import { getFinishedGoodsWarehouseId } from './warehouse.service';
 
 const saleInclude = {
   warehouse: true,
-  createdBy: { select: { id: true, firstName: true, lastName: true } },
+  createdBy: { select: { id: true, firstName: true, lastName: true, role: { select: { name: true } } } },
+  confirmedBy: { select: { id: true, firstName: true, lastName: true, role: { select: { name: true } } } },
   customer: { select: { id: true, firstName: true, lastName: true, email: true } },
   items: { include: { menuItem: true } },
 } satisfies Prisma.SaleInclude;
@@ -20,7 +21,6 @@ export interface SaleItemInput {
 }
 
 export interface CreateSaleInput {
-  warehouseId: string;
   discount?: number;
   tax?: number;
   paymentMethod?: PaymentMethod;
@@ -63,6 +63,10 @@ async function buildAndCreateSale(
   const discount = input.discount ?? 0;
   const total = subtotal + tax - discount;
 
+  // A sale that's COMPLETED the moment it's created (a POS sale rung up at the counter) has no
+  // separate accept/confirm step - the creator is, by construction, also the confirmer.
+  const selfConfirmed = meta.status === 'COMPLETED';
+
   const sale = await tx.sale.create({
     data: {
       saleNumber: generateDocNumber('SAL'),
@@ -75,6 +79,8 @@ async function buildAndCreateSale(
       customerName: input.customerName,
       customerId: meta.customerId,
       createdById: meta.createdById,
+      confirmedById: selfConfirmed ? meta.createdById : undefined,
+      confirmedAt: selfConfirmed ? new Date() : undefined,
       status: meta.status,
       source: meta.source,
       items: {
@@ -112,9 +118,12 @@ async function buildAndCreateSale(
   return sale;
 }
 
+/** Staff POS sale: customers order menu items, not warehouse inventory, so staff never pick a
+ * warehouse - stock is always deducted from Finished Goods Store, the one sales-floor warehouse. */
 export async function createSale(input: CreateSaleInput, actorId: string) {
   return prisma.$transaction(async (tx) => {
-    const sale = await buildAndCreateSale(tx, input, { createdById: actorId, status: 'COMPLETED', source: 'POS' });
+    const warehouseId = await getFinishedGoodsWarehouseId(tx);
+    const sale = await buildAndCreateSale(tx, { ...input, warehouseId }, { createdById: actorId, status: 'COMPLETED', source: 'POS' });
     await writeAuditLog({ userId: actorId, action: 'SALE_CREATED', entity: 'Sale', entityId: sale.id, newValue: sale }, tx);
     return sale;
   });
@@ -130,7 +139,7 @@ export interface CreateCustomerOrderInput {
 /** A retail customer placing their own order - no warehouse picker, tracked by customerId, starts PENDING. */
 export async function createCustomerOrder(input: CreateCustomerOrderInput, customerId: string) {
   return prisma.$transaction(async (tx) => {
-    const warehouseId = await getDefaultWarehouseId(tx);
+    const warehouseId = await getFinishedGoodsWarehouseId(tx);
     const sale = await buildAndCreateSale(
       tx,
       { ...input, warehouseId },
@@ -181,7 +190,16 @@ export async function updateSaleStatus(id: string, targetStatus: 'COMPLETED' | '
       }
     }
 
-    const updated = await tx.sale.update({ where: { id }, data: { status: targetStatus }, include: saleInclude });
+    const updated = await tx.sale.update({
+      where: { id },
+      data: {
+        status: targetStatus,
+        // Record exactly who accepted/confirmed the order and when - only set on the accept
+        // step itself, never touched by a later cancellation.
+        ...(targetStatus === 'COMPLETED' ? { confirmedById: actorId, confirmedAt: new Date() } : {}),
+      },
+      include: saleInclude,
+    });
     await writeAuditLog(
       { userId: actorId, action: targetStatus === 'CANCELLED' ? 'SALE_CANCELLED' : 'SALE_FULFILLED', entity: 'Sale', entityId: id },
       tx,

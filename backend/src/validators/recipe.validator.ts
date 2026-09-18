@@ -15,6 +15,9 @@ export const createRecipeSchema = z.object({
     name: z.string().min(1, 'Name is required').max(200),
     description: z.string().max(2000).optional(),
     menuItemId: z.string().uuid().optional(),
+    // Optional link to the Product it produces, so Production can load it - independent of
+    // menuItemId (see schema.prisma Recipe model).
+    finishedProductId: z.string().uuid().optional(),
     ingredients: z.array(ingredientSchema).min(1, 'Add at least one ingredient').refine(noDuplicateProducts, {
       message: 'Each product can only appear once in a recipe',
     }),
@@ -28,6 +31,7 @@ export const updateRecipeSchema = z.object({
     name: z.string().min(1, 'Name is required').max(200).optional(),
     description: z.string().max(2000).optional(),
     menuItemId: z.string().uuid().nullable().optional(),
+    finishedProductId: z.string().uuid().nullable().optional(),
     ingredients: z.array(ingredientSchema).min(1, 'Add at least one ingredient').refine(noDuplicateProducts, {
       message: 'Each product can only appear once in a recipe',
     }).optional(),
@@ -37,7 +41,9 @@ export const updateRecipeSchema = z.object({
 });
 
 export const listRecipesSchema = z.object({
-  query: paginationQuery,
+  query: paginationQuery.extend({
+    finishedProductId: z.string().uuid().optional(),
+  }),
   body: z.any().optional(),
   params: z.any().optional(),
 });

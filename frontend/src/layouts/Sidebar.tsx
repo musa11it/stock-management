@@ -10,7 +10,7 @@ interface SidebarProps {
 }
 
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
-  const { hasPermission } = useAuth();
+  const { hasPermission, hasRole } = useAuth();
 
   const content = (
     <div className="flex h-full flex-col bg-slate-900 text-slate-300">
@@ -25,7 +25,9 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       </div>
       <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
         {navGroups.map((group) => {
-          const items = group.items.filter((item) => !item.permission || hasPermission(item.permission));
+          const items = group.items.filter(
+            (item) => (!item.permission || hasPermission(item.permission)) && (!item.roles || hasRole(...item.roles)),
+          );
           if (items.length === 0) return null;
           return (
             <div key={group.title}>

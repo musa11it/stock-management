@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Package, DollarSign, AlertTriangle, ShoppingCart, Receipt, Trash2, TrendingUp, TrendingDown } from 'lucide-react';
@@ -8,13 +9,41 @@ import { PageSpinner } from '@/components/ui/Spinner';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Badge } from '@/components/ui/Badge';
-import { fetchDashboardSummary } from '@/services/dashboard.service';
+import { fetchDashboardSummary, fetchNetProfit } from '@/services/dashboard.service';
 import { getErrorMessage } from '@/lib/apiClient';
+import { cn } from '@/lib/cn';
+import type { NetProfitPeriod } from '@/types';
+
+const PERIOD_OPTIONS: { value: NetProfitPeriod; label: string }[] = [
+  { value: 'TODAY', label: 'Today' },
+  { value: 'WEEK', label: 'This Week' },
+  { value: 'MONTH', label: 'This Month' },
+  { value: 'YEAR', label: 'This Year' },
+  { value: 'ALL', label: 'All Time' },
+];
 
 export default function DashboardPage() {
+  const [netProfitPeriod, setNetProfitPeriod] = useState<NetProfitPeriod>('TODAY');
+
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['dashboard'],
     queryFn: fetchDashboardSummary,
+    refetchInterval: 60_000,
+  });
+
+  // A prefix of the ['dashboard'] key, so every existing invalidateQueries({ queryKey: ['dashboard'] })
+  // call (sales, wastage, purchases, adjustments, expenses, ...) already refreshes this too -
+  // no page had to change to satisfy "update automatically".
+  const {
+    data: netProfit,
+    isLoading: isNetProfitLoading,
+    isFetching: isNetProfitFetching,
+    isError: isNetProfitError,
+    error: netProfitError,
+    refetch: refetchNetProfit,
+  } = useQuery({
+    queryKey: ['dashboard', 'net-profit', netProfitPeriod],
+    queryFn: () => fetchNetProfit(netProfitPeriod),
     refetchInterval: 60_000,
   });
 
@@ -105,6 +134,84 @@ export default function DashboardPage() {
                 ))}
               </div>
             </>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Net Profit</CardTitle>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            {PERIOD_OPTIONS.map((opt) => (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => setNetProfitPeriod(opt.value)}
+                aria-pressed={netProfitPeriod === opt.value}
+                className={cn(
+                  'rounded-full px-3 py-1.5 text-xs font-medium transition-colors',
+                  netProfitPeriod === opt.value
+                    ? 'bg-brand-600 text-white shadow-sm'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </CardHeader>
+        <CardContent>
+          {isNetProfitLoading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 7 }).map((_, i) => (
+                <div key={i} className="skeleton h-5 w-full" />
+              ))}
+            </div>
+          ) : isNetProfitError || !netProfit ? (
+            <ErrorState message={getErrorMessage(netProfitError)} onRetry={refetchNetProfit} />
+          ) : (
+            <div className={cn('space-y-2 text-sm transition-opacity', isNetProfitFetching && 'opacity-60')}>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Gross profit (revenue − ingredient cost)</span>
+                <span className="font-medium text-slate-900">{netProfit.grossProfit.toLocaleString()}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Wastage / damaged stock</span>
+                <span className="font-medium text-red-600">-{netProfit.wastageCost.toLocaleString()}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Internal consumption</span>
+                <span className="font-medium text-red-600">-{netProfit.consumptionCost.toLocaleString()}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Stock adjustments (decrease)</span>
+                <span className="font-medium text-red-600">-{netProfit.adjustmentLossCost.toLocaleString()}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Stock adjustments (increase)</span>
+                <span className="font-medium text-emerald-600">+{netProfit.adjustmentGainValue.toLocaleString()}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600">Expenses</span>
+                <span className="font-medium text-red-600">-{netProfit.expenseCost.toLocaleString()}</span>
+              </div>
+
+              <div
+                className={cn(
+                  'mt-3 flex flex-col items-start justify-between gap-1 rounded-xl border-t-0 p-4 sm:flex-row sm:items-center',
+                  netProfit.netProfit >= 0 ? 'bg-emerald-50' : 'bg-red-50',
+                )}
+              >
+                <div>
+                  <span className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Net Profit · {PERIOD_OPTIONS.find((o) => o.value === netProfitPeriod)?.label}
+                  </span>
+                </div>
+                <span className={cn('text-3xl font-bold tracking-tight sm:text-4xl', netProfit.netProfit >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+                  {netProfit.netProfit.toLocaleString()}
+                </span>
+              </div>
+            </div>
           )}
         </CardContent>
       </Card>

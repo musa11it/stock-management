@@ -143,6 +143,13 @@ async function main() {
     update: {},
     create: { name: 'Main Kitchen Store', location: 'Ground Floor, Back of House' },
   });
+  // The one "sales floor" warehouse - Sales/Orders always fulfill from here, and Production
+  // sends its completed output here by default (see warehouse.service.ts getFinishedGoodsWarehouseId).
+  await prisma.warehouse.upsert({
+    where: { name: 'Finished Goods Store' },
+    update: {},
+    create: { name: 'Finished Goods Store', location: 'Front of House' },
+  });
 
   console.log('Seeding supplier...');
   const supplier = await prisma.supplier.upsert({
@@ -159,30 +166,31 @@ async function main() {
   });
 
   console.log('Seeding products...');
+  // sellingPrice is omitted for ingredients that aren't sold directly - only a couple of
+  // grab-and-go items (Soft Drinks, Water) have one.
   const productDefs = [
-    { name: 'Rice', sku: 'RICE-001', category: 'Grains & Staples', unit: 'KG', min: 20, max: 500, cost: 900, price: 0, perishable: false },
-    { name: 'Cooking Oil', sku: 'OIL-001', category: 'Condiments & Spices', unit: 'L', min: 10, max: 200, cost: 2200, price: 0, perishable: false },
-    { name: 'Tomatoes', sku: 'VEG-001', category: 'Vegetables', unit: 'KG', min: 15, max: 150, cost: 800, price: 0, perishable: true, shelfLife: 7 },
-    { name: 'Milk', sku: 'DAIRY-001', category: 'Dairy', unit: 'L', min: 10, max: 100, cost: 700, price: 0, perishable: true, shelfLife: 5 },
-    { name: 'Chicken', sku: 'MEAT-001', category: 'Meat & Poultry', unit: 'KG', min: 15, max: 120, cost: 3500, price: 0, perishable: true, shelfLife: 3 },
-    { name: 'Beef', sku: 'MEAT-002', category: 'Meat & Poultry', unit: 'KG', min: 10, max: 100, cost: 4500, price: 0, perishable: true, shelfLife: 3 },
-    { name: 'Flour', sku: 'GRAIN-001', category: 'Grains & Staples', unit: 'KG', min: 20, max: 300, cost: 750, price: 0, perishable: false },
-    { name: 'Sugar', sku: 'GRAIN-002', category: 'Grains & Staples', unit: 'KG', min: 10, max: 150, cost: 950, price: 0, perishable: false },
-    { name: 'Salt', sku: 'SPICE-001', category: 'Condiments & Spices', unit: 'KG', min: 5, max: 60, cost: 300, price: 0, perishable: false },
-    { name: 'Soft Drinks', sku: 'BEV-001', category: 'Beverages', unit: 'PC', min: 50, max: 1000, cost: 400, price: 800, perishable: false },
-    { name: 'Water', sku: 'BEV-002', category: 'Beverages', unit: 'PC', min: 50, max: 1000, cost: 200, price: 500, perishable: false },
-    { name: 'Burger Bread', sku: 'BREAD-001', category: 'Grains & Staples', unit: 'PC', min: 30, max: 400, cost: 250, price: 0, perishable: true, shelfLife: 4 },
-    { name: 'Burger Sauce', sku: 'SAUCE-001', category: 'Condiments & Spices', unit: 'ML', min: 2000, max: 20000, cost: 5, price: 0, perishable: false },
+    { name: 'Rice', category: 'Grains & Staples', unit: 'KG', min: 20, max: 500, cost: 900, perishable: false },
+    { name: 'Cooking Oil', category: 'Condiments & Spices', unit: 'L', min: 10, max: 200, cost: 2200, perishable: false },
+    { name: 'Tomatoes', category: 'Vegetables', unit: 'KG', min: 15, max: 150, cost: 800, perishable: true, shelfLife: 7 },
+    { name: 'Milk', category: 'Dairy', unit: 'L', min: 10, max: 100, cost: 700, perishable: true, shelfLife: 5 },
+    { name: 'Chicken', category: 'Meat & Poultry', unit: 'KG', min: 15, max: 120, cost: 3500, perishable: true, shelfLife: 3 },
+    { name: 'Beef', category: 'Meat & Poultry', unit: 'KG', min: 10, max: 100, cost: 4500, perishable: true, shelfLife: 3 },
+    { name: 'Flour', category: 'Grains & Staples', unit: 'KG', min: 20, max: 300, cost: 750, perishable: false },
+    { name: 'Sugar', category: 'Grains & Staples', unit: 'KG', min: 10, max: 150, cost: 950, perishable: false },
+    { name: 'Salt', category: 'Condiments & Spices', unit: 'KG', min: 5, max: 60, cost: 300, perishable: false },
+    { name: 'Soft Drinks', category: 'Beverages', unit: 'PC', min: 50, max: 1000, cost: 400, price: 800, perishable: false },
+    { name: 'Water', category: 'Beverages', unit: 'PC', min: 50, max: 1000, cost: 200, price: 500, perishable: false },
+    { name: 'Burger Bread', category: 'Grains & Staples', unit: 'PC', min: 30, max: 400, cost: 250, perishable: true, shelfLife: 4 },
+    { name: 'Burger Sauce', category: 'Condiments & Spices', unit: 'ML', min: 2000, max: 20000, cost: 5, perishable: false },
   ];
 
   const products = [];
   for (const p of productDefs) {
     const product = await prisma.product.upsert({
-      where: { sku: p.sku },
+      where: { name: p.name },
       update: {},
       create: {
         name: p.name,
-        sku: p.sku,
         categoryId: categoryByName.get(p.category)!.id,
         unitId: unitByAbbr.get(p.unit)!.id,
         minimumStock: p.min,
@@ -211,6 +219,19 @@ async function main() {
         warehouseId: warehouse.id,
         quantity: openingQty,
         averageCost: product.costPrice,
+      },
+    });
+    await prisma.inventoryBatch.create({
+      data: {
+        productId: product.id,
+        warehouseId: warehouse.id,
+        quantity: openingQty,
+        unitCost: product.costPrice,
+        // Same rule the receiving flow uses: Expiry Date = Received Date + Shelf Life.
+        expiryDate:
+          product.isPerishable && product.shelfLifeDays
+            ? new Date(Date.now() + product.shelfLifeDays * 24 * 60 * 60 * 1000)
+            : undefined,
       },
     });
     await prisma.stockMovement.create({

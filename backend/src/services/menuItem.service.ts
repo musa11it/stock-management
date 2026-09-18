@@ -79,6 +79,50 @@ export async function updateMenuItem(
   return item;
 }
 
+/**
+ * "List for Sale": makes a Product (a raw/finished/direct-sale item sitting in inventory)
+ * appear on the existing Sales/Order screens, which only ever list MenuItem rows. Creates a
+ * MenuItem named after the product with a trivial 1:1 Recipe (selling it deducts exactly 1 unit
+ * of the product itself) - correct for a produced finished product because Production already
+ * consumed its raw materials, so the sale must not consume them a second time.
+ *
+ * Idempotent: a product can only ever have one such listing (MenuItem.linkedProductId is
+ * unique), so calling this again for the same product just returns the existing listing -
+ * producing the same finished product a second, third, tenth time never creates a duplicate
+ * menu entry or asks anyone to re-enter ingredients.
+ */
+export async function ensureSellableMenuItem(productId: string, actorId: string) {
+  const product = await prisma.product.findUnique({
+    where: { id: productId },
+    include: {
+      category: true,
+      directSaleMenuItem: { include: { recipe: { include: { ingredients: { include: { product: { include: { unit: true } } } } } } } },
+    },
+  });
+  if (!product) throw AppError.notFound('Product not found');
+  if (product.directSaleMenuItem) return product.directSaleMenuItem;
+
+  if (!product.sellingPrice || product.sellingPrice.lessThanOrEqualTo(0)) {
+    throw AppError.badRequest('Set a selling price on this product before listing it for sale', 'SELLING_PRICE_REQUIRED');
+  }
+
+  const menuItem = await prisma.$transaction(async (tx) => {
+    const created = await tx.menuItem.create({
+      data: { name: product.name, price: product.sellingPrice!, category: product.category.name, linkedProductId: product.id },
+    });
+    await tx.recipe.create({
+      data: { name: product.name, menuItemId: created.id, ingredients: { create: [{ productId: product.id, quantity: 1 }] } },
+    });
+    return tx.menuItem.findUniqueOrThrow({
+      where: { id: created.id },
+      include: { recipe: { include: { ingredients: { include: { product: { include: { unit: true } } } } } } },
+    });
+  });
+
+  await writeAuditLog({ userId: actorId, action: 'MENU_ITEM_LISTED_FROM_PRODUCT', entity: 'MenuItem', entityId: menuItem.id, newValue: menuItem });
+  return menuItem;
+}
+
 export async function deleteMenuItem(id: string, actorId: string) {
   const existing = await getMenuItemById(id);
   const saleCount = await prisma.saleItem.count({ where: { menuItemId: id } });

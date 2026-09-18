@@ -17,9 +17,3 @@ function datePart(): string {
 export function generateDocNumber(prefix: string): string {
   return `${prefix}-${datePart()}-${randomSuffix(5)}`;
 }
-
-/** Derives a readable SKU from a product name (e.g. "Cooking Oil" -> "COOK-38217") when none is given. */
-export function generateSku(name: string): string {
-  const prefix = name.replace(/[^a-zA-Z0-9]/g, '').slice(0, 4).toUpperCase() || 'PROD';
-  return `${prefix}-${randomSuffix(5)}`;
-}

@@ -1,4 +1,6 @@
 import { prisma } from '../config/database';
+import { getNearestExpiryMap } from './inventory.service';
+import { getTotalPaidExpenses } from './expense.service';
 
 export interface DateRangeQuery {
   dateFrom?: Date;
@@ -11,10 +13,11 @@ export async function getStockReport() {
     orderBy: { product: { name: 'asc' } },
   });
 
+  const expiryMap = await getNearestExpiryMap(inventories.map((inv) => ({ productId: inv.productId, warehouseId: inv.warehouseId })));
+
   const rows = inventories.map((inv) => ({
     productId: inv.productId,
     productName: inv.product.name,
-    sku: inv.product.sku,
     category: inv.product.category.name,
     warehouse: inv.warehouse.name,
     unit: inv.product.unit.abbreviation,
@@ -23,7 +26,8 @@ export async function getStockReport() {
     averageCost: inv.averageCost.toNumber(),
     value: inv.quantity.mul(inv.averageCost).toNumber(),
     isLowStock: inv.quantity.lessThanOrEqualTo(inv.product.minimumStock),
-    expiryDate: inv.expiryDate,
+    expiryDate: expiryMap.get(`${inv.productId}:${inv.warehouseId}`)?.nearestExpiry ?? null,
+    isExpired: expiryMap.get(`${inv.productId}:${inv.warehouseId}`)?.isExpired ?? false,
   }));
 
   return {
@@ -211,5 +215,79 @@ export async function getSalesFinancials(range: DateRangeQuery) {
     cogs,
     profit: revenue - cogs,
     ingredientUsage: Array.from(usageByProduct.values()).sort((a, b) => b.cost - a.cost),
+  };
+}
+
+export interface NetProfitBreakdown {
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  wastageCost: number;
+  consumptionCost: number;
+  /** StockAdjustment DECREASE (e.g. stock count came up short) - a loss, subtracted. */
+  adjustmentLossCost: number;
+  /** StockAdjustment INCREASE (e.g. stock count came up over) - a gain, added. */
+  adjustmentGainValue: number;
+  /** Every PAID Expense (salaries, rent, utilities, ...) recorded via the Expense module - a loss, subtracted. */
+  expenseCost: number;
+  netProfit: number;
+  ingredientUsage: IngredientUsageRow[];
+}
+
+/**
+ * Net profit = gross profit from sales (getSalesFinancials) minus every other existing loss
+ * record the system already tracks - approved wastage, internal consumption, and DECREASE
+ * stock adjustments - plus INCREASE stock adjustments (found/corrected stock), which add back.
+ * All valued at Product.costPrice, the same cost basis already used for COGS and for
+ * wastage/consumption stock movements elsewhere in the app - nothing here introduces a second
+ * source of truth for cost.
+ */
+export async function getNetProfit(range: DateRangeQuery): Promise<NetProfitBreakdown> {
+  const financials = await getSalesFinancials(range);
+
+  const dateFilter =
+    range.dateFrom || range.dateTo
+      ? { createdAt: { ...(range.dateFrom ? { gte: range.dateFrom } : {}), ...(range.dateTo ? { lte: range.dateTo } : {}) } }
+      : {};
+
+  const [wastageItems, consumptionMovements, adjustments, expenseCost] = await Promise.all([
+    prisma.wastageItem.findMany({
+      where: { wastage: { status: 'APPROVED', ...dateFilter } },
+      include: { product: { select: { costPrice: true } } },
+    }),
+    prisma.stockMovement.findMany({
+      where: { type: 'CONSUMPTION', ...dateFilter },
+      include: { product: { select: { costPrice: true } } },
+    }),
+    prisma.stockAdjustment.findMany({
+      where: { ...dateFilter },
+      include: { product: { select: { costPrice: true } } },
+    }),
+    getTotalPaidExpenses(range),
+  ]);
+
+  const wastageCost = wastageItems.reduce((sum, i) => sum + i.quantity.toNumber() * i.product.costPrice.toNumber(), 0);
+  const consumptionCost = consumptionMovements.reduce(
+    (sum, m) => sum + Math.abs(m.quantity.toNumber()) * m.product.costPrice.toNumber(),
+    0,
+  );
+  const adjustmentLossCost = adjustments
+    .filter((a) => a.type === 'DECREASE')
+    .reduce((sum, a) => sum + a.quantity.toNumber() * a.product.costPrice.toNumber(), 0);
+  const adjustmentGainValue = adjustments
+    .filter((a) => a.type === 'INCREASE')
+    .reduce((sum, a) => sum + a.quantity.toNumber() * a.product.costPrice.toNumber(), 0);
+
+  return {
+    revenue: financials.revenue,
+    cogs: financials.cogs,
+    grossProfit: financials.profit,
+    wastageCost,
+    consumptionCost,
+    adjustmentLossCost,
+    adjustmentGainValue,
+    expenseCost,
+    netProfit: financials.profit - wastageCost - consumptionCost - adjustmentLossCost + adjustmentGainValue - expenseCost,
+    ingredientUsage: financials.ingredientUsage,
   };
 }

@@ -1,5 +1,5 @@
 import { prisma } from '../config/database';
-import { applyStockMovement } from './inventory.service';
+import { applyStockMovement, assertProductWarehouseAssignment } from './inventory.service';
 import { writeAuditLog } from './auditLog.service';
 import { resolvePagination, buildMeta } from '../utils/pagination';
 import { Prisma, StockMovementType } from '@prisma/client';
@@ -18,6 +18,10 @@ export interface AdjustStockInput {
 export async function adjustStock(input: AdjustStockInput) {
   return prisma.$transaction(async (tx) => {
     const signed = input.type === 'INCREASE' ? input.quantity : -input.quantity;
+
+    // An increase can establish a product's first assignment to a warehouse; a decrease can
+    // only correct stock that's already assigned there.
+    await assertProductWarehouseAssignment(tx, input.productId, input.warehouseId, input.type === 'INCREASE');
 
     const { movement, inventory } = await applyStockMovement(tx, {
       productId: input.productId,
@@ -65,6 +69,8 @@ export interface ConsumeStockInput {
 
 export async function consumeStock(input: ConsumeStockInput) {
   return prisma.$transaction(async (tx) => {
+    await assertProductWarehouseAssignment(tx, input.productId, input.warehouseId, false);
+
     const { movement, inventory } = await applyStockMovement(tx, {
       productId: input.productId,
       warehouseId: input.warehouseId,
@@ -105,6 +111,11 @@ export async function transferStock(input: TransferStockInput) {
   }
 
   return prisma.$transaction(async (tx) => {
+    // Only the source warehouse constrains this: stock has to already be assigned there to
+    // transfer it out. The destination doesn't need a prior assignment - receiving a transfer
+    // is exactly how it gets one.
+    await assertProductWarehouseAssignment(tx, input.productId, input.fromWarehouseId, false);
+
     // Carry the source warehouse's existing cost basis across, so the destination's average
     // cost (and therefore its inventory value) is correct immediately, not stuck at 0.
     const sourceInventory = await tx.inventory.findUnique({
@@ -123,6 +134,8 @@ export async function transferStock(input: TransferStockInput) {
       referenceType: 'TRANSFER',
     });
 
+    // Carry the exact batches (and their expiry dates) drawn from the source warehouse over to
+    // the destination, instead of collapsing them into one lump batch with no expiry.
     const inMove = await applyStockMovement(tx, {
       productId: input.productId,
       warehouseId: input.toWarehouseId,
@@ -133,6 +146,7 @@ export async function transferStock(input: TransferStockInput) {
       createdById: input.userId,
       referenceType: 'TRANSFER',
       referenceId: out.movement.id,
+      batchesIn: out.consumedBatches,
     });
 
     await writeAuditLog(

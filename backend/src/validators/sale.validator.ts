@@ -8,7 +8,6 @@ const saleItemSchema = z.object({
 
 export const createSaleSchema = z.object({
   body: z.object({
-    warehouseId: z.string().uuid('Select a warehouse'),
     discount: z.coerce.number().min(0, 'Cannot be negative').default(0),
     tax: z.coerce.number().min(0, 'Cannot be negative').default(0),
     paymentMethod: z.enum(['CASH', 'CARD', 'MOBILE_MONEY', 'BANK_TRANSFER', 'OTHER']).default('CASH'),

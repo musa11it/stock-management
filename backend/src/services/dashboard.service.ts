@@ -1,11 +1,72 @@
 import { prisma } from '../config/database';
 import { getInventoryValue, getLowStockItems } from './inventory.service';
-import { getSalesFinancials } from './reports.service';
+import { getNetProfit } from './reports.service';
 
 function startOfToday(): Date {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d;
+}
+
+function startOfWeek(): Date {
+  const d = startOfToday();
+  const day = d.getDay(); // 0 = Sunday
+  const diffToMonday = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diffToMonday);
+  return d;
+}
+
+function startOfMonth(): Date {
+  const d = startOfToday();
+  d.setDate(1);
+  return d;
+}
+
+function startOfYear(): Date {
+  const d = startOfToday();
+  d.setMonth(0, 1);
+  return d;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+export const NET_PROFIT_PERIODS = ['TODAY', 'WEEK', 'MONTH', 'YEAR', 'ALL'] as const;
+export type NetProfitPeriod = (typeof NET_PROFIT_PERIODS)[number];
+
+/**
+ * The Net Profit dashboard section, recomputed for whichever period the user picks -
+ * still just getNetProfit() with a different `dateFrom`, so there's exactly one profit
+ * calculation in the app regardless of period.
+ */
+export async function getNetProfitForPeriod(period: NetProfitPeriod) {
+  const dateFrom: Date | undefined =
+    period === 'TODAY'
+      ? startOfToday()
+      : period === 'WEEK'
+        ? startOfWeek()
+        : period === 'MONTH'
+          ? startOfMonth()
+          : period === 'YEAR'
+            ? startOfYear()
+            : undefined; // ALL time - no lower bound
+
+  const financials = await getNetProfit({ dateFrom });
+
+  return {
+    period,
+    periodStart: dateFrom ? dateFrom.toISOString() : null,
+    revenue: round2(financials.revenue),
+    cogs: round2(financials.cogs),
+    grossProfit: round2(financials.grossProfit),
+    wastageCost: round2(financials.wastageCost),
+    consumptionCost: round2(financials.consumptionCost),
+    adjustmentLossCost: round2(financials.adjustmentLossCost),
+    adjustmentGainValue: round2(financials.adjustmentGainValue),
+    expenseCost: round2(financials.expenseCost),
+    netProfit: round2(financials.netProfit),
+  };
 }
 
 export async function getDashboardSummary() {
@@ -48,15 +109,26 @@ export async function getDashboardSummary() {
     salesByDay.set(key, (salesByDay.get(key) ?? 0) + sale.total.toNumber());
   }
 
-  const todayFinancials = await getSalesFinancials({ dateFrom: todayStart });
+  // getNetProfit wraps getSalesFinancials, so today's revenue/cogs/profit are computed exactly
+  // as before - only the extra loss breakdown (todayNetProfit) below is new.
+  const todayFinancials = await getNetProfit({ dateFrom: todayStart });
 
   return {
     todayProfit: {
       revenue: Math.round(todayFinancials.revenue * 100) / 100,
       cogs: Math.round(todayFinancials.cogs * 100) / 100,
-      profit: Math.round(todayFinancials.profit * 100) / 100,
+      profit: Math.round(todayFinancials.grossProfit * 100) / 100,
     },
     todayIngredientUsage: todayFinancials.ingredientUsage.slice(0, 8),
+    todayNetProfit: {
+      grossProfit: Math.round(todayFinancials.grossProfit * 100) / 100,
+      wastageCost: Math.round(todayFinancials.wastageCost * 100) / 100,
+      consumptionCost: Math.round(todayFinancials.consumptionCost * 100) / 100,
+      adjustmentLossCost: Math.round(todayFinancials.adjustmentLossCost * 100) / 100,
+      adjustmentGainValue: Math.round(todayFinancials.adjustmentGainValue * 100) / 100,
+      expenseCost: Math.round(todayFinancials.expenseCost * 100) / 100,
+      netProfit: Math.round(todayFinancials.netProfit * 100) / 100,
+    },
     totalProducts,
     inventoryValue: Math.round(inventoryValue * 100) / 100,
     lowStockCount: lowStockItems.length,

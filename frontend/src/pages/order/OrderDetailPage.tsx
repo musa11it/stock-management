@@ -1,13 +1,17 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Circle, XCircle, ChefHat } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Circle, XCircle, ChefHat, FileText } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
 import { PageSpinner } from '@/components/ui/Spinner';
 import { ErrorState } from '@/components/ui/ErrorState';
 import { getMyOrder } from '@/services/order.service';
 import { getErrorMessage } from '@/lib/apiClient';
 import { cn } from '@/lib/cn';
+import { personLabel } from '@/lib/roleLabel';
+import { ReceiptModal } from '@/components/receipt/Receipt';
 import type { SaleStatus } from '@/types';
 
 const statusTone: Record<SaleStatus, 'amber' | 'green' | 'red'> = { PENDING: 'amber', COMPLETED: 'green', CANCELLED: 'red' };
@@ -16,6 +20,7 @@ const statusLabel: Record<SaleStatus, string> = { PENDING: 'Preparing', COMPLETE
 export default function OrderDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [showReceipt, setShowReceipt] = useState(false);
 
   const { data: order, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['my-orders', id],
@@ -41,6 +46,11 @@ export default function OrderDetailPage() {
           </div>
           <p className="mt-1 text-sm text-slate-500">Placed {new Date(order.createdAt).toLocaleString()}</p>
         </div>
+        {order.status === 'COMPLETED' && (
+          <Button variant="outline" size="sm" onClick={() => setShowReceipt(true)}>
+            <FileText className="h-4 w-4" /> View Receipt
+          </Button>
+        )}
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
@@ -101,11 +111,14 @@ export default function OrderDetailPage() {
             </div>
             <div className="mt-4 space-y-1 border-t border-slate-100 pt-3 text-xs text-slate-500">
               <p>Payment: {order.paymentMethod.replace('_', ' ')}</p>
-              <p>Pickup: {order.warehouse.name}</p>
+              <p>Ordered by: {personLabel(order.createdBy)}</p>
+              <p>Confirmed by: {order.confirmedBy ? personLabel(order.confirmedBy) : 'Not yet confirmed'}</p>
             </div>
           </CardContent>
         </Card>
       </div>
+
+      {showReceipt && <ReceiptModal sale={order} onClose={() => setShowReceipt(false)} />}
     </div>
   );
 }

@@ -21,6 +21,8 @@ import auditLogRoutes from './auditLog.routes';
 import dashboardRoutes from './dashboard.routes';
 import publicRoutes from './public.routes';
 import orderRoutes from './order.routes';
+import expenseRoutes from './expense.routes';
+import productionRoutes from './production.routes';
 
 const router = Router();
 
@@ -41,6 +43,8 @@ router.use('/wastage', wastageRoutes);
 router.use('/recipes', recipeRoutes);
 router.use('/menu', menuRoutes);
 router.use('/sales', saleRoutes);
+router.use('/expenses', expenseRoutes);
+router.use('/production', productionRoutes);
 router.use('/roles', roleRoutes);
 router.use('/permissions', permissionRoutes);
 router.use('/reports', reportsRoutes);

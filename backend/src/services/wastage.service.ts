@@ -3,7 +3,7 @@ import { prisma } from '../config/database';
 import { AppError } from '../errors/AppError';
 import { resolvePagination, buildMeta } from '../utils/pagination';
 import { writeAuditLog } from './auditLog.service';
-import { applyStockMovement } from './inventory.service';
+import { applyStockMovement, assertProductWarehouseAssignment } from './inventory.service';
 import { generateDocNumber } from '../utils/docNumber';
 
 const wastageInclude = {
@@ -53,6 +53,11 @@ export async function createWastage(input: CreateWastageInput, actorId: string, 
   const autoApprove = actorRole === 'SUPER_ADMIN' || actorRole === 'MANAGER';
 
   return prisma.$transaction(async (tx) => {
+    // Wastage always removes stock that's supposed to already be there.
+    for (const item of input.items) {
+      await assertProductWarehouseAssignment(tx, item.productId, input.warehouseId, false);
+    }
+
     const wastage = await tx.wastage.create({
       data: {
         wastageNumber: generateDocNumber('WST'),

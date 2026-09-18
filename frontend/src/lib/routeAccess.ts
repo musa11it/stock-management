@@ -18,6 +18,8 @@ const ROUTE_PERMISSIONS: Record<string, string> = {
   '/recipes': 'recipes.read',
   '/menu': 'menu.read',
   '/sales': 'sales.read',
+  '/production': 'production.read',
+  '/expenses': 'expenses.read',
   '/order': 'orders.create',
   '/orders': 'orders.read',
   '/users': 'users.read',

@@ -3,7 +3,7 @@ import { prisma } from '../config/database';
 import { AppError } from '../errors/AppError';
 import { resolvePagination, buildMeta } from '../utils/pagination';
 import { writeAuditLog } from './auditLog.service';
-import { applyStockMovement } from './inventory.service';
+import { applyStockMovement, assertProductWarehouseAssignment } from './inventory.service';
 import { generateDocNumber } from '../utils/docNumber';
 
 const purchaseInclude = {
@@ -17,7 +17,7 @@ export interface PurchaseItemInput {
   productId: string;
   quantity: number;
   unitCost: number;
-  expiryDate?: Date;
+  /** Optional supplier lot label, carried onto the InventoryBatch created when this item is received. */
   batchNumber?: string;
 }
 
@@ -75,6 +75,12 @@ export async function createPurchase(input: CreatePurchaseInput, actorId: string
     throw AppError.badRequest('One or more products are invalid', 'INVALID_PRODUCT');
   }
 
+  // A purchase can be a product's first-ever assignment to a warehouse, but it can't be used to
+  // move a product already assigned elsewhere into a warehouse it isn't assigned to.
+  for (const item of input.items) {
+    await assertProductWarehouseAssignment(prisma, item.productId, input.warehouseId, true);
+  }
+
   const { subtotal, total } = computeTotals(input.items, input.tax ?? 0, input.discount ?? 0);
 
   const purchase = await prisma.purchase.create({
@@ -97,7 +103,6 @@ export async function createPurchase(input: CreatePurchaseInput, actorId: string
           quantity: item.quantity,
           unitCost: item.unitCost,
           total: item.quantity * item.unitCost,
-          expiryDate: item.expiryDate,
           batchNumber: item.batchNumber,
         })),
       },
@@ -136,6 +141,9 @@ export async function updatePurchase(
 
   const purchase = await prisma.$transaction(async (tx) => {
     if (input.items) {
+      for (const item of input.items) {
+        await assertProductWarehouseAssignment(tx, item.productId, existing.warehouseId, true);
+      }
       await tx.purchaseItem.deleteMany({ where: { purchaseId: id } });
       await tx.purchaseItem.createMany({
         data: input.items!.map((item) => ({
@@ -144,7 +152,6 @@ export async function updatePurchase(
           quantity: item.quantity,
           unitCost: item.unitCost,
           total: item.quantity * item.unitCost,
-          expiryDate: item.expiryDate,
           batchNumber: item.batchNumber,
         })),
       });
@@ -169,6 +176,16 @@ export async function receivePurchase(id: string, input: ReceivePurchaseInput, a
 
     const overrideMap = new Map((input.items ?? []).map((i) => [i.productId, i.receivedQty]));
 
+    const products = await tx.product.findMany({
+      where: { id: { in: purchase.items.map((i) => i.productId) } },
+      select: { id: true, isPerishable: true, shelfLifeDays: true },
+    });
+    const productMap = new Map(products.map((p) => [p.id, p]));
+
+    // Expiry is never entered by hand - it's computed the moment stock actually arrives, so the
+    // same product received on different dates ends up with different, correctly-dated batches.
+    const receivedDate = new Date();
+
     for (const item of purchase.items) {
       const remaining = item.quantity.sub(item.receivedQty);
       if (remaining.lessThanOrEqualTo(0)) continue;
@@ -176,6 +193,12 @@ export async function receivePurchase(id: string, input: ReceivePurchaseInput, a
       const requested = overrideMap.has(item.productId) ? new Prisma.Decimal(overrideMap.get(item.productId)!) : remaining;
       const qtyToReceive = requested.greaterThan(remaining) ? remaining : requested;
       if (qtyToReceive.lessThanOrEqualTo(0)) continue;
+
+      const product = productMap.get(item.productId);
+      const expiryDate =
+        product?.isPerishable && product.shelfLifeDays
+          ? new Date(receivedDate.getTime() + product.shelfLifeDays * 24 * 60 * 60 * 1000)
+          : undefined;
 
       await applyStockMovement(tx, {
         productId: item.productId,
@@ -187,7 +210,7 @@ export async function receivePurchase(id: string, input: ReceivePurchaseInput, a
         referenceId: purchase.id,
         reason: `Purchase ${purchase.purchaseNumber} received`,
         createdById: actorId,
-        expiryDate: item.expiryDate ?? undefined,
+        expiryDate,
         batchNumber: item.batchNumber ?? undefined,
       });
 

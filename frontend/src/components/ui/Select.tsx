@@ -4,9 +4,10 @@ import { cn } from '@/lib/cn';
 interface SelectProps extends SelectHTMLAttributes<HTMLSelectElement> {
   error?: string;
   label?: string;
+  hint?: string;
 }
 
-export const Select = forwardRef<HTMLSelectElement, SelectProps>(({ className, error, label, id, children, ...props }, ref) => {
+export const Select = forwardRef<HTMLSelectElement, SelectProps>(({ className, error, label, hint, id, children, ...props }, ref) => {
   const selectId = id ?? props.name;
   return (
     <div className="w-full">
@@ -29,6 +30,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(({ className, e
       >
         {children}
       </select>
+      {hint && !error && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
       {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
     </div>
   );

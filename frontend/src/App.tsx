@@ -32,6 +32,10 @@ const WastagePage = lazy(() => import('@/pages/wastage/WastagePage'));
 const RecipesPage = lazy(() => import('@/pages/recipes/RecipesPage'));
 const MenuPage = lazy(() => import('@/pages/menu/MenuPage'));
 const SalesPage = lazy(() => import('@/pages/sales/SalesPage'));
+const ProductionPage = lazy(() => import('@/pages/production/ProductionPage'));
+
+const ExpensesPage = lazy(() => import('@/pages/expenses/ExpensesPage'));
+const MyPaymentsPage = lazy(() => import('@/pages/expenses/MyPaymentsPage'));
 
 const UsersPage = lazy(() => import('@/pages/users/UsersPage'));
 const RolesPage = lazy(() => import('@/pages/roles/RolesPage'));
@@ -111,6 +115,16 @@ function App() {
             </Route>
             <Route element={<PermissionRoute permission="sales.read" />}>
               <Route path="/sales" element={<SalesPage />} />
+            </Route>
+            <Route element={<PermissionRoute permission="production.read" />}>
+              <Route path="/production" element={<ProductionPage />} />
+            </Route>
+
+            <Route element={<PermissionRoute permission="expenses.read" />}>
+              <Route path="/expenses" element={<ExpensesPage />} />
+            </Route>
+            <Route element={<PermissionRoute roles={['STAFF', 'MANAGER']} />}>
+              <Route path="/my-payments" element={<MyPaymentsPage />} />
             </Route>
 
             <Route element={<PermissionRoute permission="users.read" />}>

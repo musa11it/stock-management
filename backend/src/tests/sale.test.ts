@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { prisma, createTestUser, createTestCategory, createTestUnit, createTestWarehouse, createTestProduct, uniqueSuffix } from './helpers';
+import { prisma, createTestUser, createTestCategory, createTestUnit, createTestProduct, uniqueSuffix, getTestSalesWarehouseId } from './helpers';
 import { adjustStock } from '../services/stock.service';
 import { createSale, cancelSale } from '../services/sale.service';
 
@@ -16,12 +16,13 @@ describe('sales deduct recipe ingredients accurately', () => {
     const user = await createTestUser('STAFF');
     const category = await createTestCategory();
     const unit = await createTestUnit();
-    const warehouse = await createTestWarehouse();
+    // createSale() no longer takes a warehouseId - it always resolves Finished Goods Store
+    // internally, same as a customer order. Use the real shared one, not a private test warehouse.
     const bread = await createTestProduct({ categoryId: category.id, unitId: unit.id });
     const patty = await createTestProduct({ categoryId: category.id, unitId: unit.id });
 
     userId = user.id;
-    warehouseId = warehouse.id;
+    warehouseId = await getTestSalesWarehouseId();
     breadId = bread.id;
     pattyId = patty.id;
     categoryId = category.id;
@@ -53,17 +54,18 @@ describe('sales deduct recipe ingredients accurately', () => {
     await prisma.recipeIngredient.deleteMany({ where: { productId: { in: [breadId, pattyId] } } });
     await prisma.recipe.deleteMany({ where: { menuItemId } });
     await prisma.menuItem.deleteMany({ where: { id: menuItemId } });
+    await prisma.inventoryBatch.deleteMany({ where: { productId: { in: [breadId, pattyId] } } });
     await prisma.inventory.deleteMany({ where: { productId: { in: [breadId, pattyId] } } });
     await prisma.product.deleteMany({ where: { id: { in: [breadId, pattyId] } } });
     await prisma.category.deleteMany({ where: { id: categoryId } });
     await prisma.unit.deleteMany({ where: { id: unitId } });
-    await prisma.warehouse.deleteMany({ where: { id: warehouseId } });
+    // warehouseId is the shared Finished Goods Store now, not a private test warehouse - never delete it.
     await prisma.user.deleteMany({ where: { id: userId } });
     await prisma.$disconnect();
   });
 
   it('deducts the correct ingredient quantities when a menu item is sold', async () => {
-    const sale = await createSale({ warehouseId, items: [{ menuItemId, quantity: 3 }] }, userId);
+    const sale = await createSale({ items: [{ menuItemId, quantity: 3 }] }, userId);
     expect(sale.total.toNumber()).toBe(12000);
 
     const breadInv = await prisma.inventory.findUnique({ where: { productId_warehouseId: { productId: breadId, warehouseId } } });
@@ -73,7 +75,7 @@ describe('sales deduct recipe ingredients accurately', () => {
   });
 
   it('refuses the sale and rolls back completely when an ingredient is insufficient', async () => {
-    await expect(createSale({ warehouseId, items: [{ menuItemId, quantity: 10 }] }, userId)).rejects.toThrow(/Insufficient stock/i);
+    await expect(createSale({ items: [{ menuItemId, quantity: 10 }] }, userId)).rejects.toThrow(/Insufficient stock/i);
 
     const breadInv = await prisma.inventory.findUnique({ where: { productId_warehouseId: { productId: breadId, warehouseId } } });
     const pattyInv = await prisma.inventory.findUnique({ where: { productId_warehouseId: { productId: pattyId, warehouseId } } });
@@ -84,7 +86,7 @@ describe('sales deduct recipe ingredients accurately', () => {
   });
 
   it('reverses stock when a completed sale is cancelled', async () => {
-    const sale = await createSale({ warehouseId, items: [{ menuItemId, quantity: 1 }] }, userId);
+    const sale = await createSale({ items: [{ menuItemId, quantity: 1 }] }, userId);
     const cancelled = await cancelSale(sale.id, userId);
     expect(cancelled.status).toBe('CANCELLED');
 
